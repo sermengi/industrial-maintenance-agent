@@ -59,6 +59,16 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/maintenance_a
   RUN_DB_INTEGRATION=1 uv run pytest tests/test_db.py
 ```
 
+To migrate and reseed the deterministic Phase 1 fixtures:
+
+```bash
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/maintenance_agent \
+  uv run maintenance-agent-db reset
+
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/maintenance_agent_test \
+  uv run maintenance-agent-db reset --database test
+```
+
 CI also runs:
 
 ```bash

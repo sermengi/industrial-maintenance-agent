@@ -13,6 +13,9 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
 ]
 
+[project.scripts]
+maintenance-agent-db = "maintenance_agent.db.cli:main"
+
 [dependency-groups]
 dev = [
     "mypy>=1.11.0",

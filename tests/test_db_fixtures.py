@@ -2,6 +2,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from maintenance_agent.db.bootstrap import (
+    FIXTURE_SPECS,
+    PHASE_1_TABLE_NAMES,
+    load_all_fixture_records,
+)
 
 FIXTURES_DIR = Path("src/maintenance_agent/db/fixtures")
 
@@ -38,6 +43,28 @@ def test_phase_1_seed_fixture_files_and_counts_match_spec() -> None:
     }
     assert actual_counts == expected_counts
     assert sum(actual_counts.values()) == 37
+
+
+def test_phase_1_bootstrap_loader_validates_all_fixture_records() -> None:
+    records_by_table = load_all_fixture_records()
+
+    assert set(records_by_table) == set(PHASE_1_TABLE_NAMES)
+    assert sum(len(records) for records in records_by_table.values()) == 37
+    assert [spec.table.name for spec in FIXTURE_SPECS] == [
+        "assets",
+        "fault_taxonomy",
+        "operating_limits",
+        "plant_policies",
+        "telemetry_snapshots",
+        "fault_events",
+        "maintenance_events",
+        "observations",
+        "work_orders",
+    ]
+
+    telemetry_record = records_by_table["telemetry_snapshots"][0]
+    assert str(telemetry_record["vibration_mm_s"]) == "2.1"
+    assert telemetry_record["timestamp"].tzinfo is not None
 
 
 def test_phase_1_seed_fixtures_capture_spec_ground_truth_values() -> None:
@@ -90,8 +117,9 @@ def test_phase_1_seed_fixtures_preserve_operating_limits_and_policy_provenance()
     assert operating_limits["OL-002"]["source_type"] == "manufacturer_reference_adopted"
     assert operating_limits["OL-002"]["normal_max"] == 82
     assert operating_limits["OL-002"]["critical_min"] == 82
-    assert "not presented as a literal CP-200 manufacturer specification" in (
-        operating_limits["OL-002"]["provenance_note"]
+    assert (
+        "not presented as a literal CP-200 manufacturer specification"
+        in (operating_limits["OL-002"]["provenance_note"])
     )
     assert operating_limits["OL-003"]["critical_max"] == 4.0
     assert operating_limits["OL-004"]["critical_max"] == 70
