@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Numeric
+from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, Index, Numeric
 from sqlalchemy.orm import configure_mappers
 
 from maintenance_agent.db.models import Base
@@ -149,3 +149,18 @@ def test_phase_1_measurement_models_use_numeric_columns() -> None:
         column_type = operating_limits.c[column_name].type
         assert isinstance(column_type, Numeric)
         assert (column_type.precision, column_type.scale) == expected_precision_scale
+
+
+def test_phase_1_timestamp_columns_are_timezone_aware() -> None:
+    expected_timestamp_columns = {
+        "telemetry_snapshots": ["timestamp"],
+        "fault_events": ["timestamp"],
+        "observations": ["timestamp"],
+    }
+
+    for table_name, column_names in expected_timestamp_columns.items():
+        table = Base.metadata.tables[table_name]
+        for column_name in column_names:
+            column_type = table.c[column_name].type
+            assert isinstance(column_type, DateTime)
+            assert column_type.timezone is True
