@@ -1,0 +1,42 @@
+[
+  {
+    "snapshot_id": "TS-001",
+    "asset_id": "PUMP-101",
+    "timestamp": "2026-08-14T09:00:00Z",
+    "vibration_mm_s": 2.1,
+    "bearing_temperature_c": 54,
+    "inlet_pressure_bar": 2.4,
+    "discharge_pressure_bar": 6.8,
+    "flow_rate_l_min": 98
+  },
+  {
+    "snapshot_id": "TS-002",
+    "asset_id": "PUMP-102",
+    "timestamp": "2026-08-14T09:00:00Z",
+    "vibration_mm_s": 8.1,
+    "bearing_temperature_c": 58,
+    "inlet_pressure_bar": 2.3,
+    "discharge_pressure_bar": 6.4,
+    "flow_rate_l_min": 94
+  },
+  {
+    "snapshot_id": "TS-003",
+    "asset_id": "PUMP-103",
+    "timestamp": "2026-08-14T09:00:00Z",
+    "vibration_mm_s": 4.2,
+    "bearing_temperature_c": 91,
+    "inlet_pressure_bar": 2.5,
+    "discharge_pressure_bar": 6.6,
+    "flow_rate_l_min": 96
+  },
+  {
+    "snapshot_id": "TS-004",
+    "asset_id": "PUMP-104",
+    "timestamp": "2026-08-14T09:00:00Z",
+    "vibration_mm_s": 2.8,
+    "bearing_temperature_c": 61,
+    "inlet_pressure_bar": 2.2,
+    "discharge_pressure_bar": 3.9,
+    "flow_rate_l_min": 61
+  }
+]

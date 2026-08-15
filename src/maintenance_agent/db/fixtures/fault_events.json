@@ -1,0 +1,47 @@
+[
+  {
+    "event_id": "FE-001",
+    "asset_id": "PUMP-102",
+    "fault_code": "F101",
+    "fault_name": "HIGH_VIBRATION",
+    "timestamp": "2026-08-14T08:42:00Z",
+    "severity": "medium",
+    "status": "active"
+  },
+  {
+    "event_id": "FE-002",
+    "asset_id": "PUMP-103",
+    "fault_code": "F102",
+    "fault_name": "HIGH_BEARING_TEMPERATURE",
+    "timestamp": "2026-01-14T10:20:00Z",
+    "severity": "high",
+    "status": "resolved"
+  },
+  {
+    "event_id": "FE-003",
+    "asset_id": "PUMP-103",
+    "fault_code": "F102",
+    "fault_name": "HIGH_BEARING_TEMPERATURE",
+    "timestamp": "2026-04-02T14:05:00Z",
+    "severity": "high",
+    "status": "resolved"
+  },
+  {
+    "event_id": "FE-004",
+    "asset_id": "PUMP-103",
+    "fault_code": "F102",
+    "fault_name": "HIGH_BEARING_TEMPERATURE",
+    "timestamp": "2026-08-13T16:40:00Z",
+    "severity": "high",
+    "status": "active"
+  },
+  {
+    "event_id": "FE-005",
+    "asset_id": "PUMP-104",
+    "fault_code": "F103",
+    "fault_name": "LOW_DISCHARGE_PRESSURE",
+    "timestamp": "2026-08-14T08:15:00Z",
+    "severity": "medium",
+    "status": "active"
+  }
+]

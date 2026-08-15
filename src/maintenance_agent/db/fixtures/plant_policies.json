@@ -1,0 +1,14 @@
+[
+  {
+    "policy_id": "PP-001",
+    "type": "recurring_fault",
+    "condition": "Same fault occurs >=3 times within 12 months",
+    "required_action": "Escalate for root-cause investigation and require human review before consequential maintenance action"
+  },
+  {
+    "policy_id": "PP-002",
+    "type": "consequential_action",
+    "condition": "Work-order submission changes system state",
+    "required_action": "Human approval is required before final submission"
+  }
+]

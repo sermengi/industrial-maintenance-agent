@@ -1,0 +1,34 @@
+[
+  {
+    "asset_id": "PUMP-101",
+    "asset_type": "centrifugal_pump",
+    "model": "CP-200",
+    "location": "Line-A",
+    "installation_date": "2022-03-15",
+    "status": "operational"
+  },
+  {
+    "asset_id": "PUMP-102",
+    "asset_type": "centrifugal_pump",
+    "model": "CP-200",
+    "location": "Line-A",
+    "installation_date": "2021-11-08",
+    "status": "degraded"
+  },
+  {
+    "asset_id": "PUMP-103",
+    "asset_type": "centrifugal_pump",
+    "model": "CP-200",
+    "location": "Line-B",
+    "installation_date": "2020-06-20",
+    "status": "degraded"
+  },
+  {
+    "asset_id": "PUMP-104",
+    "asset_type": "centrifugal_pump",
+    "model": "CP-300",
+    "location": "Line-B",
+    "installation_date": "2023-01-12",
+    "status": "maintenance_required"
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "observation_id": "OBS-001",
+    "asset_id": "PUMP-104",
+    "timestamp": "2026-08-14T08:05:00Z",
+    "type": "seal_leak",
+    "severity": "minor",
+    "description": "Minor fluid leakage observed near the mechanical seal.",
+    "reported_by": "operator"
+  },
+  {
+    "observation_id": "OBS-002",
+    "asset_id": "PUMP-102",
+    "timestamp": "2026-08-14T08:35:00Z",
+    "type": "abnormal_vibration",
+    "severity": "moderate",
+    "description": "Operator reported stronger-than-normal vibration during operation.",
+    "reported_by": "operator"
+  }
+]

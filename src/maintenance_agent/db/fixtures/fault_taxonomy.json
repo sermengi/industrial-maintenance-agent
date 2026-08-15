@@ -1,0 +1,22 @@
+[
+  {
+    "fault_code": "F101",
+    "canonical_name": "HIGH_VIBRATION",
+    "description": "Plant alert for abnormal pump vibration."
+  },
+  {
+    "fault_code": "F102",
+    "canonical_name": "HIGH_BEARING_TEMPERATURE",
+    "description": "Plant alert for abnormal bearing temperature."
+  },
+  {
+    "fault_code": "F103",
+    "canonical_name": "LOW_DISCHARGE_PRESSURE",
+    "description": "Plant alert for discharge pressure below operating limit."
+  },
+  {
+    "fault_code": "F104",
+    "canonical_name": "SEAL_LEAK_DETECTED",
+    "description": "Plant fault category for confirmed mechanical seal leakage."
+  }
+]

@@ -1,0 +1,82 @@
+[
+  {
+    "maintenance_id": "ME-001",
+    "asset_id": "PUMP-101",
+    "date": "2026-02-15",
+    "type": "preventive",
+    "component": "bearing",
+    "description": "Routine bearing inspection completed; no abnormal condition found."
+  },
+  {
+    "maintenance_id": "ME-002",
+    "asset_id": "PUMP-101",
+    "date": "2026-05-20",
+    "type": "preventive",
+    "component": "coupling",
+    "description": "Alignment checked and found within plant tolerance."
+  },
+  {
+    "maintenance_id": "ME-003",
+    "asset_id": "PUMP-102",
+    "date": "2025-06-10",
+    "type": "corrective",
+    "component": "coupling",
+    "description": "Coupling realigned after elevated vibration was reported."
+  },
+  {
+    "maintenance_id": "ME-004",
+    "asset_id": "PUMP-102",
+    "date": "2025-12-18",
+    "type": "preventive",
+    "component": "bearing",
+    "description": "Bearing inspected; condition acceptable."
+  },
+  {
+    "maintenance_id": "ME-005",
+    "asset_id": "PUMP-102",
+    "date": "2026-04-05",
+    "type": "preventive",
+    "component": "lubrication",
+    "description": "Bearing lubrication completed during scheduled maintenance."
+  },
+  {
+    "maintenance_id": "ME-006",
+    "asset_id": "PUMP-103",
+    "date": "2026-01-15",
+    "type": "corrective",
+    "component": "bearing",
+    "description": "Bearing replaced after high bearing temperature event."
+  },
+  {
+    "maintenance_id": "ME-007",
+    "asset_id": "PUMP-103",
+    "date": "2026-04-03",
+    "type": "corrective",
+    "component": "bearing",
+    "description": "Bearing replaced following repeated overheating."
+  },
+  {
+    "maintenance_id": "ME-008",
+    "asset_id": "PUMP-103",
+    "date": "2026-06-12",
+    "type": "inspection",
+    "component": "lubrication_system",
+    "description": "Lubrication level checked; no immediate defect identified."
+  },
+  {
+    "maintenance_id": "ME-009",
+    "asset_id": "PUMP-104",
+    "date": "2026-03-21",
+    "type": "preventive",
+    "component": "mechanical_seal",
+    "description": "Mechanical seal inspected; minor wear documented."
+  },
+  {
+    "maintenance_id": "ME-010",
+    "asset_id": "PUMP-104",
+    "date": "2026-07-05",
+    "type": "inspection",
+    "component": "discharge_line",
+    "description": "Discharge line inspected; no blockage identified."
+  }
+]

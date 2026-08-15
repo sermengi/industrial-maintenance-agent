@@ -1,0 +1,20 @@
+[
+  {
+    "work_order_id": "WO-001",
+    "asset_id": "PUMP-101",
+    "issue": "Scheduled coupling alignment inspection",
+    "priority": "low",
+    "status": "completed",
+    "created_at": "2026-05-18",
+    "approved": true
+  },
+  {
+    "work_order_id": "WO-002",
+    "asset_id": "PUMP-103",
+    "issue": "Investigate repeated bearing overheating",
+    "priority": "high",
+    "status": "completed",
+    "created_at": "2026-04-02",
+    "approved": true
+  }
+]
