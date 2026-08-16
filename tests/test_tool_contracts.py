@@ -102,8 +102,7 @@ def test_tool_function_signatures_follow_contract() -> None:
 
         assert inspect.iscoroutinefunction(tool_function)
         assert [
-            (parameter.name, parameter.annotation)
-            for parameter in signature.parameters.values()
+            (parameter.name, parameter.annotation) for parameter in signature.parameters.values()
         ] == expected_parameters
         assert signature.return_annotation is expected_return
 

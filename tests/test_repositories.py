@@ -86,9 +86,7 @@ async def dump_queryable_repository_records(
 
 async def count_queryable_repository_records(session: AsyncSession) -> int:
     records_by_table = await dump_queryable_repository_records(session)
-    return sum(
-        len(records) for records in records_by_table.values()
-    )
+    return sum(len(records) for records in records_by_table.values())
 
 
 def test_repository_modules_expose_locked_function_surface() -> None:
@@ -186,9 +184,7 @@ async def test_repository_queries_match_asset_ground_truth(session: AsyncSession
     assert pump_102_telemetry.vibration_mm_s == Decimal("8.10")
     assert [observation.observation_id for observation in pump_102_observations] == ["OBS-002"]
     assert pump_102_observations[0].type == "abnormal_vibration"
-    pump_102_maintenance_by_id = {
-        event.maintenance_id: event for event in pump_102_maintenance
-    }
+    pump_102_maintenance_by_id = {event.maintenance_id: event for event in pump_102_maintenance}
     assert "ME-003" in pump_102_maintenance_by_id
     assert pump_102_maintenance_by_id["ME-003"].type == "corrective"
     assert pump_102_maintenance_by_id["ME-003"].component == "coupling"
@@ -249,8 +245,7 @@ async def test_reference_repositories_return_expected_rows(session: AsyncSession
     assert [limit.operating_limit_id for limit in cp_200_limits] == ["OL-001", "OL-002"]
     assert cp_200_limits[1].source_type == "manufacturer_reference_adopted"
     assert (
-        "manufacturer reference adopted by the synthetic plant"
-        in cp_200_limits[1].provenance_note
+        "manufacturer reference adopted by the synthetic plant" in cp_200_limits[1].provenance_note
     )
     assert (
         "not presented as a literal CP-200 manufacturer specification"

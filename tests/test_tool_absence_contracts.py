@@ -60,9 +60,7 @@ def asset() -> AssetRecord:
 
 def test_resolve_asset_is_the_only_tool_result_with_top_level_status() -> None:
     models_with_status = [
-        model.__name__
-        for model in RESULT_MODELS
-        if "status" in model.model_fields
+        model.__name__ for model in RESULT_MODELS if "status" in model.model_fields
     ]
 
     assert models_with_status == ["ResolveAssetResult"]

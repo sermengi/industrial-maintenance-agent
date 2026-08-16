@@ -15,9 +15,7 @@ def test_phase_1_has_single_initial_alembic_revision() -> None:
 
 
 def test_phase_1_initial_revision_creates_locked_tables_and_timestamptz_columns() -> None:
-    migration_source = Path(
-        "migrations/versions/20260815_0001_create_phase1_schema.py"
-    ).read_text()
+    migration_source = Path("migrations/versions/20260815_0001_create_phase1_schema.py").read_text()
 
     expected_tables = {
         "assets",

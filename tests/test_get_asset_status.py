@@ -43,9 +43,7 @@ def telemetry_records() -> dict[str, TelemetrySnapshotRecord]:
 def active_fault_records() -> dict[str, list[FaultEventRecord]]:
     return {
         "PUMP-101": [],
-        "PUMP-102": [
-            _fault("FE-001", "PUMP-102", "F101", "HIGH_VIBRATION", "medium", "active")
-        ],
+        "PUMP-102": [_fault("FE-001", "PUMP-102", "F101", "HIGH_VIBRATION", "medium", "active")],
         "PUMP-103": [
             _fault("FE-004", "PUMP-103", "F102", "HIGH_BEARING_TEMPERATURE", "high", "active")
         ],
@@ -59,9 +57,7 @@ def active_fault_records() -> dict[str, list[FaultEventRecord]]:
 def observation_records() -> dict[str, list[ObservationRecord]]:
     return {
         "PUMP-101": [],
-        "PUMP-102": [
-            _observation("OBS-002", "PUMP-102", "abnormal_vibration", "moderate")
-        ],
+        "PUMP-102": [_observation("OBS-002", "PUMP-102", "abnormal_vibration", "moderate")],
         "PUMP-103": [],
         "PUMP-104": [_observation("OBS-001", "PUMP-104", "seal_leak", "minor")],
     }
