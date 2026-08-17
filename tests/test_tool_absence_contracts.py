@@ -16,12 +16,17 @@ from maintenance_agent.tools.get_maintenance_history import (
 )
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult, get_plant_policy
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult, resolve_asset
+from maintenance_agent.tools.search_maintenance_docs import (
+    SearchMaintenanceDocsResult,
+    search_maintenance_docs,
+)
 
 RESULT_MODELS = [
     ResolveAssetResult,
     GetAssetStatusResult,
     GetMaintenanceHistoryResult,
     GetPlantPolicyResult,
+    SearchMaintenanceDocsResult,
 ]
 
 LIST_FIELD_NAMES = {
@@ -38,6 +43,7 @@ LIST_FIELD_NAMES = {
         "recurrence",
     ],
     GetPlantPolicyResult: ["policies"],
+    SearchMaintenanceDocsResult: ["results"],
 }
 
 
@@ -117,6 +123,10 @@ async def test_expected_business_absence_returns_typed_results_without_raising(
         "maintenance_agent.tools.get_plant_policy.plant_policies.list_by_type",
         empty_list,
     )
+    monkeypatch.setattr(
+        "maintenance_agent.tools.search_maintenance_docs.embed",
+        lambda _texts, input_type: [[0.0] * 512],
+    )
 
     assert await resolve_asset("PUMP-999", session) == ResolveAssetResult(status="not_found")
 
@@ -137,6 +147,7 @@ async def test_expected_business_absence_returns_typed_results_without_raising(
         policy_type="missing_type",
         policies=[],
     )
+    assert await search_maintenance_docs("", session) == SearchMaintenanceDocsResult(query="")
 
 
 def test_missing_metric_classification_uses_nullable_fields_not_normal_default() -> None:
@@ -155,8 +166,15 @@ def test_missing_metric_classification_uses_nullable_fields_not_normal_default()
 
 
 @pytest.mark.asyncio
-async def test_infrastructure_failures_propagate_as_exceptions(asset: AssetRecord) -> None:
+async def test_infrastructure_failures_propagate_as_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+    asset: AssetRecord,
+) -> None:
     broken_session = cast(AsyncSession, object())
+    monkeypatch.setattr(
+        "maintenance_agent.tools.search_maintenance_docs.embed",
+        lambda _texts, input_type: [[0.0] * 512],
+    )
 
     with pytest.raises(AttributeError):
         await resolve_asset("PUMP-101", broken_session)
@@ -169,6 +187,9 @@ async def test_infrastructure_failures_propagate_as_exceptions(asset: AssetRecor
 
     with pytest.raises(AttributeError):
         await get_plant_policy("recurring_fault", broken_session)
+
+    with pytest.raises(AttributeError):
+        await search_maintenance_docs("vibration", broken_session)
 
 
 def test_list_fields_have_no_redundant_empty_boolean_or_status_flags() -> None:

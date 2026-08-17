@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.rag.corpus import CorpusChunk
-from maintenance_agent.rag.embeddings import EMBEDDING_DIMENSION, EmbeddingClient, embed
+from maintenance_agent.rag.embeddings import EmbeddingClient, embed, to_pgvector_literal
 
 
 async def ingest_corpus_chunks(
@@ -83,14 +83,8 @@ async def ingest_corpus_chunks(
                 "chunk_id": chunk.chunk_id,
                 "chunk_heading": chunk.chunk_heading,
                 "text": chunk.text,
-                "embedding": _vector_literal(vector),
+                "embedding": to_pgvector_literal(vector),
             },
         )
 
     return len(chunks)
-
-
-def _vector_literal(vector: Sequence[float]) -> str:
-    if len(vector) != EMBEDDING_DIMENSION:
-        raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
-    return "[" + ",".join(str(float(value)) for value in vector) + "]"

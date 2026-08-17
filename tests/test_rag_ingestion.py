@@ -8,8 +8,9 @@ from maintenance_agent.rag.embeddings import (
     EMBEDDING_DIMENSION,
     EmbeddingInputType,
     EmbeddingVector,
+    to_pgvector_literal,
 )
-from maintenance_agent.rag.ingestion import _vector_literal, ingest_corpus_chunks
+from maintenance_agent.rag.ingestion import ingest_corpus_chunks
 
 
 class StubEmbeddingClient:
@@ -52,11 +53,11 @@ async def test_task_4_ingestion_embeds_chunk_text_and_upserts_typed_rows() -> No
     assert first_execution["parameters"]["chunk_id"] == chunks[0].chunk_id
     assert first_execution["parameters"]["document_id"] == chunks[0].document_id
     assert first_execution["parameters"]["linked_fault_codes"] == ["F101", "F103", "F104"]
-    assert first_execution["parameters"]["embedding"] == _vector_literal(
+    assert first_execution["parameters"]["embedding"] == to_pgvector_literal(
         [0.125] * EMBEDDING_DIMENSION
     )
 
 
 def test_task_4_vector_literal_requires_locked_dimension() -> None:
     with pytest.raises(ValueError, match="512 dimensions"):
-        _vector_literal([0.0])
+        to_pgvector_literal([0.0])

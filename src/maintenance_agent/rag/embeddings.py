@@ -104,3 +104,9 @@ def _validate_embedding_response(vectors: list[EmbeddingVector], expected_count:
             f"expected {EMBEDDING_DIMENSION}-dimension embeddings, "
             f"received dimensions {invalid_dimensions}"
         )
+
+
+def to_pgvector_literal(vector: Sequence[float]) -> str:
+    if len(vector) != EMBEDDING_DIMENSION:
+        raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
+    return "[" + ",".join(str(float(value)) for value in vector) + "]"

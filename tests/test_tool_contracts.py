@@ -13,6 +13,7 @@ from maintenance_agent.tools import (
     get_maintenance_history,
     get_plant_policy,
     resolve_asset,
+    search_maintenance_docs,
 )
 from maintenance_agent.tools.get_asset_status import (
     ClassifiedReading,
@@ -24,12 +25,17 @@ from maintenance_agent.tools.get_maintenance_history import (
 )
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
+from maintenance_agent.tools.search_maintenance_docs import (
+    DocSearchHit,
+    SearchMaintenanceDocsResult,
+)
 
 TOOL_MODULES = [
     resolve_asset,
     get_asset_status,
     get_maintenance_history,
     get_plant_policy,
+    search_maintenance_docs,
 ]
 
 TOOL_FUNCTIONS: list[tuple[Callable[..., Any], list[tuple[str, Any]], type[BaseModel]]] = [
@@ -53,6 +59,11 @@ TOOL_FUNCTIONS: list[tuple[Callable[..., Any], list[tuple[str, Any]], type[BaseM
         [("policy_type", str), ("session", AsyncSession)],
         GetPlantPolicyResult,
     ),
+    (
+        search_maintenance_docs.search_maintenance_docs,
+        [("query", str), ("session", AsyncSession)],
+        SearchMaintenanceDocsResult,
+    ),
 ]
 
 RESULT_MODELS = [
@@ -60,6 +71,7 @@ RESULT_MODELS = [
     GetAssetStatusResult,
     GetMaintenanceHistoryResult,
     GetPlantPolicyResult,
+    SearchMaintenanceDocsResult,
 ]
 
 TOOL_MODELS = [
@@ -69,6 +81,8 @@ TOOL_MODELS = [
     FaultRecurrence,
     GetMaintenanceHistoryResult,
     GetPlantPolicyResult,
+    DocSearchHit,
+    SearchMaintenanceDocsResult,
 ]
 
 
@@ -78,6 +92,7 @@ def test_tool_result_models_follow_name_convention() -> None:
         "GetAssetStatusResult",
         "GetMaintenanceHistoryResult",
         "GetPlantPolicyResult",
+        "SearchMaintenanceDocsResult",
     ]
     assert ClassifiedReading.__name__ == "ClassifiedReading"
     assert FaultRecurrence.__name__ == "FaultRecurrence"
@@ -122,6 +137,7 @@ def test_collection_fields_default_to_empty_lists() -> None:
             "recurrence",
         ],
         GetPlantPolicyResult: ["policies"],
+        SearchMaintenanceDocsResult: ["results"],
     }
 
     for model, field_names in expected_collection_fields.items():
@@ -147,7 +163,13 @@ def test_optional_scalar_fields_are_explicitly_nullable() -> None:
 def test_tool_model_fields_do_not_use_float_annotations() -> None:
     for model in TOOL_MODELS:
         for field in model.model_fields.values():
+            if model is DocSearchHit and field_name_is_similarity_score(model, field):
+                continue
             assert not _annotation_contains_float(field.annotation)
+
+
+def field_name_is_similarity_score(model: type[BaseModel], field: FieldInfo) -> bool:
+    return model.model_fields["similarity_score"] is field
 
 
 def _field_default_is_empty_list(field: FieldInfo) -> bool:
