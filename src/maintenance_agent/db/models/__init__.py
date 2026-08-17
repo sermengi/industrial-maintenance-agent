@@ -6,6 +6,7 @@ from maintenance_agent.db.models.maintenance_events import MaintenanceEvent
 from maintenance_agent.db.models.observations import Observation
 from maintenance_agent.db.models.operating_limits import OperatingLimit
 from maintenance_agent.db.models.plant_policies import PlantPolicy
+from maintenance_agent.db.models.rag_chunks import RagChunk
 from maintenance_agent.db.models.telemetry import TelemetrySnapshot
 from maintenance_agent.db.models.work_orders import WorkOrder
 
@@ -18,6 +19,7 @@ __all__ = [
     "Observation",
     "OperatingLimit",
     "PlantPolicy",
+    "RagChunk",
     "TelemetrySnapshot",
     "WorkOrder",
 ]

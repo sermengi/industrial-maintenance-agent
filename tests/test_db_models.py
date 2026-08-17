@@ -2,6 +2,7 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, Index, N
 from sqlalchemy.orm import configure_mappers
 
 from maintenance_agent.db.models import Base
+from maintenance_agent.db.types import Vector
 
 
 def test_phase_1_model_mappers_configure() -> None:
@@ -19,6 +20,7 @@ def test_phase_1_models_define_expected_tables() -> None:
         "fault_taxonomy",
         "operating_limits",
         "plant_policies",
+        "rag_chunks",
     }
 
 
@@ -33,6 +35,7 @@ def test_phase_1_models_use_natural_primary_keys() -> None:
         "fault_taxonomy": ["fault_code"],
         "operating_limits": ["operating_limit_id"],
         "plant_policies": ["policy_id"],
+        "rag_chunks": ["chunk_id"],
     }
 
     for table_name, expected_columns in expected_primary_keys.items():
@@ -74,6 +77,12 @@ def test_phase_1_models_define_expected_checks_and_indexes() -> None:
             "ck_operating_limits_source_type",
         },
         "plant_policies": {"ck_plant_policies_type"},
+        "rag_chunks": {
+            "ck_rag_chunks_equipment_type",
+            "ck_rag_chunks_applicability",
+            "ck_rag_chunks_content_provenance",
+            "ck_rag_chunks_topic",
+        },
     }
 
     for table_name, check_names in expected_checks.items():
@@ -99,6 +108,36 @@ def test_phase_1_models_define_expected_checks_and_indexes() -> None:
         "ix_observations_asset_id_timestamp",
         "ix_work_orders_asset_id_created_at",
     }
+
+
+def test_task_4_rag_chunks_schema_uses_typed_metadata_columns_and_vector() -> None:
+    rag_chunks = Base.metadata.tables["rag_chunks"]
+
+    expected_columns = {
+        "chunk_id",
+        "document_id",
+        "chunk_heading",
+        "text",
+        "manufacturer",
+        "source_product_family",
+        "section",
+        "page",
+        "equipment_type",
+        "applicability",
+        "source_url",
+        "content_provenance",
+        "topic",
+        "linked_fault_codes",
+        "embedding",
+    }
+
+    assert set(rag_chunks.c.keys()) == expected_columns
+    assert "metadata" not in rag_chunks.c
+    assert "json" not in {column.type.__class__.__name__.lower() for column in rag_chunks.c}
+    assert rag_chunks.c.linked_fault_codes.type.item_type.__class__.__name__ == "Text"
+    assert isinstance(rag_chunks.c.embedding.type, Vector)
+    assert rag_chunks.c.embedding.type.dimension == 512
+    assert rag_chunks.indexes == set()
 
 
 def test_phase_1_models_keep_selected_fields_unconstrained() -> None:

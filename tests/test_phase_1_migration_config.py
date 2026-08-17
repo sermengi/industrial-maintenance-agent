@@ -4,14 +4,13 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 
-def test_phase_1_has_single_initial_alembic_revision() -> None:
+def test_alembic_revision_chain_includes_phase_3_rag_revision() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     revisions = list(script.walk_revisions())
 
-    assert len(revisions) == 1
-    revision = revisions[0]
-    assert revision.revision == "20260815_0001"
-    assert revision.down_revision is None
+    assert [revision.revision for revision in revisions] == ["20260817_0002", "20260815_0001"]
+    assert revisions[0].down_revision == "20260815_0001"
+    assert revisions[1].down_revision is None
 
 
 def test_phase_1_initial_revision_creates_locked_tables_and_timestamptz_columns() -> None:
@@ -34,6 +33,19 @@ def test_phase_1_initial_revision_creates_locked_tables_and_timestamptz_columns(
         assert f'op.create_table(\n        "{table_name}",' in migration_source
 
     assert migration_source.count("postgresql.TIMESTAMP(timezone=True)") == 3
+
+
+def test_task_4_rag_migration_creates_pgvector_schema_without_ann_index() -> None:
+    migration_source = Path("migrations/versions/20260817_0002_create_rag_chunks.py").read_text()
+
+    assert 'op.create_table(\n        "rag_chunks",' in migration_source
+    assert "CREATE EXTENSION IF NOT EXISTS vector" in migration_source
+    assert "Vector(512)" in migration_source
+    assert "postgresql.ARRAY(sa.Text())" in migration_source
+    assert "JSON" not in migration_source
+    assert "JSONB" not in migration_source
+    assert "ivfflat" not in migration_source.lower()
+    assert "hnsw" not in migration_source.lower()
 
 
 def test_phase_1_test_database_configuration_is_documented_and_provisioned() -> None:
