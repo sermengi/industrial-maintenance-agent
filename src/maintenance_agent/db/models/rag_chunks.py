@@ -39,6 +39,7 @@ class RagChunk(Base):
     document_id: Mapped[str] = mapped_column(String(32), nullable=False)
     chunk_heading: Mapped[str | None] = mapped_column(Text, nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     manufacturer: Mapped[str] = mapped_column(Text, nullable=False)
     source_product_family: Mapped[str] = mapped_column(Text, nullable=False)
     section: Mapped[str] = mapped_column(Text, nullable=False)

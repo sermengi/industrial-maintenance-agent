@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 maintenance-agent-db = "maintenance_agent.db.cli:main"
+maintenance-agent-rag = "maintenance_agent.rag.cli:main"
 
 [dependency-groups]
 dev = [

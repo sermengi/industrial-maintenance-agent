@@ -8,9 +8,14 @@ def test_alembic_revision_chain_includes_phase_3_rag_revision() -> None:
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     revisions = list(script.walk_revisions())
 
-    assert [revision.revision for revision in revisions] == ["20260817_0002", "20260815_0001"]
-    assert revisions[0].down_revision == "20260815_0001"
-    assert revisions[1].down_revision is None
+    assert [revision.revision for revision in revisions] == [
+        "20260817_0003",
+        "20260817_0002",
+        "20260815_0001",
+    ]
+    assert revisions[0].down_revision == "20260817_0002"
+    assert revisions[1].down_revision == "20260815_0001"
+    assert revisions[2].down_revision is None
 
 
 def test_phase_1_initial_revision_creates_locked_tables_and_timestamptz_columns() -> None:
@@ -46,6 +51,16 @@ def test_task_4_rag_migration_creates_pgvector_schema_without_ann_index() -> Non
     assert "JSONB" not in migration_source
     assert "ivfflat" not in migration_source.lower()
     assert "hnsw" not in migration_source.lower()
+
+
+def test_task_6_rag_migration_adds_content_hash_for_dedup() -> None:
+    migration_source = Path(
+        "migrations/versions/20260817_0003_add_rag_chunk_content_hash.py"
+    ).read_text()
+
+    assert 'op.add_column("rag_chunks", sa.Column("content_hash"' in migration_source
+    assert "sha256(text::bytea)" in migration_source
+    assert 'op.alter_column("rag_chunks", "content_hash", nullable=False)' in migration_source
 
 
 def test_phase_1_test_database_configuration_is_documented_and_provisioned() -> None:

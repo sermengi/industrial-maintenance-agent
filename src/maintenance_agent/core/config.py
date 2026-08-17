@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     database_url: str | None = Field(default=None, validation_alias="DATABASE_URL")
     test_database_url: str | None = Field(default=None, validation_alias="TEST_DATABASE_URL")
     voyage_api_key: str | None = Field(default=None, validation_alias="VOYAGE_API_KEY")
+    rag_embedding_backend: str = Field(default="voyage", validation_alias="RAG_EMBEDDING_BACKEND")
 
     model_config = SettingsConfigDict(
         env_file=".env",

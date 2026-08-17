@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from hashlib import sha256
 from typing import Literal, Protocol
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -76,6 +77,16 @@ class VoyageEmbeddingClient:
         return embeddings
 
 
+class DeterministicEmbeddingClient:
+    def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        input_type: EmbeddingInputType,
+    ) -> list[EmbeddingVector]:
+        return [_deterministic_vector(text, input_type=input_type) for text in texts]
+
+
 def embed(
     texts: Sequence[str],
     *,
@@ -90,6 +101,10 @@ def embed(
 
 def get_embedding_client() -> EmbeddingClient:
     settings = get_settings()
+    if settings.rag_embedding_backend == "mock":
+        return DeterministicEmbeddingClient()
+    if settings.rag_embedding_backend != "voyage":
+        raise RuntimeError("RAG_EMBEDDING_BACKEND must be either 'voyage' or 'mock'.")
     if not settings.voyage_api_key:
         raise RuntimeError("VOYAGE_API_KEY is required for the real embedding backend.")
     return VoyageEmbeddingClient(settings.voyage_api_key)
@@ -110,3 +125,16 @@ def to_pgvector_literal(vector: Sequence[float]) -> str:
     if len(vector) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
     return "[" + ",".join(str(float(value)) for value in vector) + "]"
+
+
+def _deterministic_vector(text: str, *, input_type: EmbeddingInputType) -> EmbeddingVector:
+    seed = f"{input_type}:{text}".encode()
+    digest = sha256(seed).digest()
+    values: list[float] = []
+    while len(values) < EMBEDDING_DIMENSION:
+        for byte in digest:
+            values.append((byte / 127.5) - 1.0)
+            if len(values) == EMBEDDING_DIMENSION:
+                break
+        digest = sha256(digest).digest()
+    return values

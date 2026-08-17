@@ -1,13 +1,20 @@
 import pytest
 
+from maintenance_agent.core.config import get_settings
 from maintenance_agent.rag.embeddings import (
     EMBEDDING_DIMENSION,
     EMBEDDING_MODEL,
+    DeterministicEmbeddingClient,
     EmbeddingInputType,
     EmbeddingVector,
     embed,
     get_embedding_client,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_settings_cache() -> None:
+    get_settings.cache_clear()
 
 
 class StubEmbeddingClient:
@@ -35,9 +42,24 @@ def test_task_4_embed_uses_injected_client_without_api_key() -> None:
 
 def test_task_4_real_embedding_backend_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    monkeypatch.delenv("RAG_EMBEDDING_BACKEND", raising=False)
 
     with pytest.raises(RuntimeError, match="VOYAGE_API_KEY"):
         get_embedding_client()
+
+
+def test_task_6_mock_embedding_backend_uses_deterministic_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RAG_EMBEDDING_BACKEND", "mock")
+
+    client = get_embedding_client()
+
+    assert isinstance(client, DeterministicEmbeddingClient)
+    assert client.embed(["alpha"], input_type="document") == client.embed(
+        ["alpha"],
+        input_type="document",
+    )
 
 
 def test_task_4_embedding_model_dimension_is_locked_to_voyage_3_lite() -> None:

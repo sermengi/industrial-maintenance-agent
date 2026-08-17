@@ -118,6 +118,7 @@ def test_task_4_rag_chunks_schema_uses_typed_metadata_columns_and_vector() -> No
         "document_id",
         "chunk_heading",
         "text",
+        "content_hash",
         "manufacturer",
         "source_product_family",
         "section",
