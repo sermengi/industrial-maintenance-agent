@@ -56,13 +56,29 @@ def test_task_2_chunks_are_self_contained_with_document_metadata() -> None:
     chunks = load_corpus_chunks(SOURCE_DIR)
 
     for chunk in chunks:
-        assert chunk.metadata["document_id"] == chunk.document_id
-        assert chunk.metadata["applicability"] == "generic_reference"
-        assert chunk.metadata["content_provenance"] == "authored_representative"
+        assert chunk.metadata.document_id == chunk.document_id
+        assert chunk.metadata.applicability == "generic_reference"
+        assert chunk.metadata.content_provenance == "authored_representative"
         assert chunk.text.startswith("# ")
         assert "\n\n## " in chunk.text
         assert chunk.chunk_heading is not None
         assert len(chunk.text.split()) >= 35
+
+
+def test_task_3_chunk_records_include_document_and_chunk_metadata() -> None:
+    records = [chunk.to_record() for chunk in load_corpus_chunks(SOURCE_DIR)]
+
+    for record in records:
+        metadata = record.metadata_dict()
+
+        assert metadata["chunk_id"] == record.chunk_id
+        assert metadata["document_id"] == record.document_id
+        assert metadata["chunk_heading"] == record.chunk_heading
+        assert metadata["equipment_type"] == "centrifugal_pump"
+        assert metadata["applicability"] == "generic_reference"
+        assert metadata["content_provenance"] == "authored_representative"
+        assert isinstance(metadata["linked_fault_codes"], list)
+        assert record.text.startswith("# ")
 
 
 def assert_chunk_ids_are_contiguous(chunks: list[CorpusChunk]) -> None:

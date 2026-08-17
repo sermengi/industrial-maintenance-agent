@@ -2,28 +2,18 @@ import json
 from pathlib import Path
 from typing import Any
 
+from maintenance_agent.rag.metadata import (
+    APPLICABILITY,
+    CONTENT_PROVENANCE,
+    EQUIPMENT_TYPE,
+    FAULT_CODE_TO_TOPIC,
+    REQUIRED_DOCUMENT_METADATA_FIELDS,
+    TOPICS,
+    validate_document_metadata,
+)
+
 SOURCE_DIR = Path("rag/corpus/sources")
 DOCUMENT_IDS = {"DOC-01", "DOC-02", "DOC-03", "DOC-04", "DOC-05"}
-REQUIRED_FRONTMATTER_FIELDS = {
-    "document_id",
-    "manufacturer",
-    "source_product_family",
-    "section",
-    "page",
-    "equipment_type",
-    "applicability",
-    "source_url",
-    "content_provenance",
-    "topic",
-    "linked_fault_codes",
-}
-TOPICS = {
-    "HIGH_VIBRATION",
-    "HIGH_BEARING_TEMPERATURE",
-    "LOW_DISCHARGE_PRESSURE",
-    "INSPECTION_PROCEDURE",
-}
-FAULT_CODES = {"F101", "F102", "F103", "F104"}
 
 
 def parse_source_fixture(path: Path) -> tuple[dict[str, Any], str]:
@@ -65,15 +55,18 @@ def test_task_1_rag_source_files_exist_with_complete_metadata() -> None:
     }
 
     for document_id, (frontmatter, body) in sources.items():
-        assert set(frontmatter) == REQUIRED_FRONTMATTER_FIELDS
+        metadata = validate_document_metadata(frontmatter)
+
+        assert set(frontmatter) == REQUIRED_DOCUMENT_METADATA_FIELDS
         assert frontmatter["document_id"] == document_id
-        assert frontmatter["equipment_type"] == "centrifugal_pump"
-        assert frontmatter["applicability"] == "generic_reference"
-        assert frontmatter["content_provenance"] == "authored_representative"
+        assert metadata.document_id == document_id
+        assert frontmatter["equipment_type"] == EQUIPMENT_TYPE
+        assert frontmatter["applicability"] == APPLICABILITY
+        assert frontmatter["content_provenance"] == CONTENT_PROVENANCE
         assert frontmatter["topic"] in TOPICS
         assert frontmatter["page"]
         assert frontmatter["source_url"].startswith("https://")
-        assert set(frontmatter["linked_fault_codes"]) <= FAULT_CODES
+        assert set(frontmatter["linked_fault_codes"]) <= set(FAULT_CODE_TO_TOPIC)
         assert body.lstrip().startswith("# ")
         assert "## " in body
         assert "is a literal manual for CP-200" not in body

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from maintenance_agent.rag.metadata import ChunkRecord, DocumentMetadata, validate_document_metadata
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SOURCE_DIR = PROJECT_ROOT / "rag" / "corpus" / "sources"
 DOCUMENT_HEADING_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
@@ -14,7 +16,7 @@ CHUNK_HEADING_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class SourceDocument:
-    metadata: dict[str, Any]
+    metadata: DocumentMetadata
     title: str
     preamble: str
     body: str
@@ -22,7 +24,7 @@ class SourceDocument:
 
     @property
     def document_id(self) -> str:
-        return str(self.metadata["document_id"])
+        return self.metadata.document_id
 
 
 @dataclass(frozen=True)
@@ -31,7 +33,16 @@ class CorpusChunk:
     document_id: str
     chunk_heading: str | None
     text: str
-    metadata: dict[str, Any]
+    metadata: DocumentMetadata
+
+    def to_record(self) -> ChunkRecord:
+        return ChunkRecord(
+            chunk_id=self.chunk_id,
+            document_id=self.document_id,
+            chunk_heading=self.chunk_heading,
+            text=self.text,
+            document_metadata=self.metadata,
+        )
 
 
 def parse_frontmatter_value(raw_value: str) -> str | list[str]:
@@ -75,8 +86,10 @@ def parse_source_document(path: Path) -> SourceDocument:
     else:
         preamble = after_title[: first_chunk_heading.start()].strip()
 
+    document_metadata = validate_document_metadata(metadata)
+
     return SourceDocument(
-        metadata=metadata,
+        metadata=document_metadata,
         title=title,
         preamble=preamble,
         body=normalized_body,
