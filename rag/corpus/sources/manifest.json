@@ -1,0 +1,51 @@
+{
+  "corpus_version": "phase-3-task-1",
+  "content_provenance": "authored_representative",
+  "documents": [
+    {
+      "document_id": "DOC-01",
+      "path": "DOC-01.md",
+      "manufacturer": "Xylem",
+      "source_product_family": "Series 1710",
+      "section": "6 Maintenance / 6.2 Inspection checklist",
+      "page": "24-25",
+      "topic": "INSPECTION_PROCEDURE"
+    },
+    {
+      "document_id": "DOC-02",
+      "path": "DOC-02.md",
+      "manufacturer": "Xylem",
+      "source_product_family": "Series 1710",
+      "section": "7.8 The pump runs but delivers too little or no liquid",
+      "page": "27-28",
+      "topic": "LOW_DISCHARGE_PRESSURE"
+    },
+    {
+      "document_id": "DOC-03",
+      "path": "DOC-03.md",
+      "manufacturer": "Xylem",
+      "source_product_family": "Series 1710",
+      "section": "7.11 The pump vibrates and generates too much noise",
+      "page": "28",
+      "topic": "HIGH_VIBRATION"
+    },
+    {
+      "document_id": "DOC-04",
+      "path": "DOC-04.md",
+      "manufacturer": "Bell & Gossett",
+      "source_product_family": "Series HSCS",
+      "section": "6.1 Maintenance schedule",
+      "page": "27",
+      "topic": "HIGH_BEARING_TEMPERATURE"
+    },
+    {
+      "document_id": "DOC-05",
+      "path": "DOC-05.md",
+      "manufacturer": "Xylem",
+      "source_product_family": "TechnoForce e-MTX",
+      "section": "6.15 Troubleshooting - LOW SYSTEM (Discharge)",
+      "page": "32",
+      "topic": "LOW_DISCHARGE_PRESSURE"
+    }
+  ]
+}
