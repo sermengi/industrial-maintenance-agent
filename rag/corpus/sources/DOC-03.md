@@ -19,7 +19,7 @@ noise and vibration in a horizontal centrifugal pump. It is generic reference
 material and must not be treated as the literal manual for any synthetic plant
 asset.
 
-## Coupling and Shaft Alignment
+## Coupling, Shaft Alignment, and Foundation
 
 Excessive vibration should first prompt a check of coupling condition and shaft
 alignment when recent history includes coupling work, base movement, or
@@ -33,19 +33,17 @@ prior coupling realignment is useful context because it indicates that the
 machine has already shown sensitivity in that area, but it does not prove the
 current root cause.
 
+Inspect the baseplate, hold-down bolts, grout, pipe supports, and connected
+piping for looseness or strain. Piping load can pull the pump out of alignment
+and produce recurring vibration after maintenance. Loose fasteners can amplify
+normal hydraulic forces into damaging vibration.
+
 ## Hydraulic Causes
 
 Vibration and noise can also result from poor suction conditions, cavitation,
 air entrainment, operation far from the preferred flow range, or a blocked
 suction strainer. Compare inlet pressure, flow rate, source level, valve
 positions, and sound character before focusing only on mechanical alignment.
-
-## Foundation, Piping, and Fasteners
-
-Inspect the baseplate, hold-down bolts, grout, pipe supports, and connected
-piping for looseness or strain. Piping load can pull the pump out of alignment
-and produce recurring vibration after maintenance. Loose fasteners can amplify
-normal hydraulic forces into damaging vibration.
 
 ## Rotating Assembly and Bearings
 

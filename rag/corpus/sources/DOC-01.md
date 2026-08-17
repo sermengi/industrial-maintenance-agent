@@ -19,7 +19,7 @@ horizontal centrifugal pump. It is intended as generic reference material for
 similar pump maintenance workflows, not as a model-specific manual for CP-200 or
 CP-300 assets.
 
-## Safety and Isolation
+## Safety, Isolation, and Mechanical Seal Inspection
 
 Before inspecting the pump, place the equipment in a safe maintenance state.
 Stop the driver, isolate electrical power, close suction and discharge valves
@@ -27,8 +27,6 @@ where the procedure requires it, and relieve pressure from the casing and seal
 area. Allow hot surfaces to cool before touching bearing housings, seal glands,
 or coupling guards. Keep the coupling guard installed during operation and
 remove it only after lockout and verification that rotating parts cannot move.
-
-## Mechanical Seal and Leakage Inspection
 
 Inspect the area around the mechanical seal, stuffing box, shaft sleeve, and
 drain path for active leakage, dried residue, scoring, or signs that process

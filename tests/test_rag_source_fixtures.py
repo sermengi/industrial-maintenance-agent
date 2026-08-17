@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 SOURCE_DIR = Path("rag/corpus/sources")
 DOCUMENT_IDS = {"DOC-01", "DOC-02", "DOC-03", "DOC-04", "DOC-05"}
 REQUIRED_FRONTMATTER_FIELDS = {

@@ -27,7 +27,7 @@ performance problem rather than only a sensor display issue, but the pressure
 transmitter, wiring, scaling, and controller configuration should still be
 checked if readings conflict with field gauges.
 
-## System and Valve Checks
+## System, Valve, Pump, and Seal Checks
 
 Verify that suction supply is adequate and that the discharge path is open.
 Check for closed isolation valves, blocked strainers, bypasses left open,
@@ -36,16 +36,12 @@ recent inspection found no discharge-line blockage, keep that result in the
 evidence set and continue with other low-pressure causes instead of repeating
 the same blocked-line assumption.
 
-## Pump and Seal Checks
-
 If the system path appears open, inspect the pump for loss of prime, wrong
 rotation, worn impeller, internal recirculation, or leakage. A current
 mechanical-seal leak and a history of seal wear make seal-related leakage or
 air entry a stronger hypothesis, particularly when low discharge pressure is
 paired with low flow. The finding should remain a hypothesis until field
 inspection confirms the failed component.
-
-## Low-System Troubleshooting Table
 
 | Evidence | Diagnostic direction |
 | --- | --- |
