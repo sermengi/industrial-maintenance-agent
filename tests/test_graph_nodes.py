@@ -1,0 +1,201 @@
+import ast
+import inspect
+from collections.abc import Sequence
+from datetime import date
+from typing import Any, cast
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from maintenance_agent.db.repositories.records import AssetRecord
+from maintenance_agent.llm.client import (
+    LLMMessage,
+    LLMResponse,
+    LLMTool,
+    LLMToolChoice,
+    ToolCallRequest,
+)
+from maintenance_agent.orchestration import graph as graph_module
+from maintenance_agent.orchestration.graph import (
+    AgentGraphDependencies,
+    build_agent_graph,
+    evidence_gathering_node,
+    request_interpretation_node,
+)
+from maintenance_agent.orchestration.state import GraphState
+from maintenance_agent.tools.resolve_asset import ResolveAssetResult
+
+
+@pytest.mark.asyncio
+async def test_procedure_lookup_only_offers_document_search_tool() -> None:
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(tool_calls=[]),
+        ]
+    )
+
+    await evidence_gathering_node(
+        _state(intent="procedure_lookup", asset=_asset()),
+        llm_client,
+        cast(AsyncSession, object()),
+    )
+
+    assert llm_client.tool_names_by_call == [["search_maintenance_docs"]]
+
+
+@pytest.mark.asyncio
+async def test_unknown_asset_routes_to_terminal_without_evidence_or_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_invoke_tool_binding(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        del state, session
+        assert tool_name == "resolve_asset"
+        assert args == {"identifier": "PUMP-999"}
+        return ResolveAssetResult(status="not_found")
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="interpret-1",
+                        name="interpret_request",
+                        input={
+                            "intent": "troubleshooting",
+                            "asset_identifier": "PUMP-999",
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=llm_client,
+            session=cast(AsyncSession, object()),
+        )
+    )
+
+    final_state = await compiled_graph.ainvoke(_state(query="Diagnose PUMP-999."))
+
+    assert final_state["response"].status == "unknown_asset"
+    assert final_state["response"].asset_id == "PUMP-999"
+    assert llm_client.tool_names_by_call == [["interpret_request"]]
+
+
+@pytest.mark.asyncio
+async def test_interpretation_with_asset_hint_uses_classification_only_schema() -> None:
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="classify-1",
+                        name="classify_request",
+                        input={"intent": "procedure_lookup"},
+                    )
+                ]
+            )
+        ]
+    )
+
+    update = await request_interpretation_node(
+        _state(
+            query="For PUMP-103, show the lockout procedure.",
+            asset_id_hint="PUMP-103",
+        ),
+        llm_client,
+    )
+
+    assert update == {"intent": "procedure_lookup"}
+    assert llm_client.tool_names_by_call == [["classify_request"]]
+    assert "asset_identifier" not in llm_client.schemas_by_call[0]["classify_request"]["properties"]
+    assert "extract the asset identifier" not in llm_client.messages_by_call[0][0].content
+
+
+def test_terminal_node_is_only_agent_query_response_constructor() -> None:
+    source = inspect.getsource(graph_module)
+    tree = ast.parse(source)
+    constructors: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            if any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "AgentQueryResponse"
+                for child in ast.walk(node)
+            ):
+                constructors.append(node.name)
+
+    assert constructors == ["terminal_response_node"]
+
+
+class _RecordingLLMClient:
+    def __init__(self, responses: Sequence[LLMResponse]) -> None:
+        self._responses = list(responses)
+        self.messages_by_call: list[Sequence[LLMMessage]] = []
+        self.tool_names_by_call: list[list[str]] = []
+        self.schemas_by_call: list[dict[str, dict[str, Any]]] = []
+
+    async def generate(
+        self,
+        messages: Sequence[LLMMessage],
+        *,
+        tools: Sequence[LLMTool] | None = None,
+        tool_choice: LLMToolChoice | None = None,
+    ) -> LLMResponse:
+        del tool_choice
+        self.messages_by_call.append(messages)
+        self.tool_names_by_call.append([tool.name for tool in tools or []])
+        self.schemas_by_call.append({tool.name: tool.input_schema for tool in tools or []})
+        if not self._responses:
+            raise AssertionError("Unexpected LLM call.")
+        return self._responses.pop(0)
+
+
+def _asset() -> AssetRecord:
+    return AssetRecord(
+        asset_id="PUMP-103",
+        asset_type="centrifugal_pump",
+        model="CP-200",
+        location="Line 3",
+        installation_date=date(2021, 6, 1),
+        status="operational",
+    )
+
+
+def _state(
+    *,
+    query: str = "Diagnose PUMP-103.",
+    asset_id_hint: str | None = None,
+    intent: str | None = None,
+    asset: AssetRecord | None = None,
+) -> GraphState:
+    return cast(
+        GraphState,
+        {
+            "request_id": "test-request",
+            "query": query,
+            "asset_id_hint": asset_id_hint,
+            "fault_code_hint": None,
+            "intent": intent,
+            "asset": asset,
+            "asset_resolution_status": None,
+            "tool_calls": [],
+            "structured_evidence": [],
+            "document_evidence": [],
+            "work_order_draft": None,
+            "approval_status": "none",
+            "errors": [],
+            "synthesis_answer": None,
+            "synthesis_confidence": None,
+            "response": None,
+        },
+    )

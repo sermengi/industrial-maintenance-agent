@@ -1,0 +1,406 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal, cast
+
+from langgraph.graph import END, START, StateGraph
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from maintenance_agent.llm.client import (
+    LLMClient,
+    LLMMessage,
+    LLMResponse,
+    LLMTool,
+    LLMToolChoice,
+)
+from maintenance_agent.orchestration.state import (
+    GraphState,
+    Intent,
+    StructuredEvidenceItem,
+    ToolCallRecord,
+    ToolResult,
+)
+from maintenance_agent.orchestration.tool_bindings import (
+    LLMOfferedToolName,
+    build_llm_tools,
+    invoke_tool_binding,
+)
+from maintenance_agent.schemas.agent import (
+    AgentError,
+    AgentQueryResponse,
+    AgentStatus,
+    Confidence,
+    DocumentEvidence,
+    StructuredEvidence,
+)
+from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
+from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
+from maintenance_agent.tools.resolve_asset import ResolveAssetResult
+from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+
+REQUEST_INTERPRETATION_NODE = "request_interpretation"
+ASSET_RESOLUTION_NODE = "asset_resolution"
+EVIDENCE_GATHERING_NODE = "evidence_gathering"
+SYNTHESIS_NODE = "synthesis"
+TERMINAL_RESPONSE_NODE = "terminal_response"
+
+InterpretationRoute = Literal["terminal", "evidence_gathering"]
+
+INTERPRET_REQUEST_TOOL_NAME = "interpret_request"
+CLASSIFY_REQUEST_TOOL_NAME = "classify_request"
+SYNTHESIZE_RESPONSE_TOOL_NAME = "synthesize_response"
+
+DEFAULT_REQUEST_ID = "graph-local-request"
+
+TOOLS_BY_INTENT: dict[Intent, tuple[LLMOfferedToolName, ...]] = {
+    "procedure_lookup": ("search_maintenance_docs",),
+    "troubleshooting": (
+        "get_asset_status",
+        "get_maintenance_history",
+        "search_maintenance_docs",
+        "get_plant_policy",
+    ),
+    "maintenance_check": (
+        "get_asset_status",
+        "get_maintenance_history",
+        "search_maintenance_docs",
+        "get_plant_policy",
+    ),
+    "history_query": (
+        "get_asset_status",
+        "get_maintenance_history",
+        "search_maintenance_docs",
+        "get_plant_policy",
+    ),
+    "work_order_request": (
+        "get_asset_status",
+        "get_maintenance_history",
+        "search_maintenance_docs",
+        "get_plant_policy",
+        "create_work_order_draft",
+    ),
+}
+
+
+class RequestInterpretation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    intent: Intent
+    asset_identifier: str | None = None
+
+
+class RequestIntentOnly(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    intent: Intent
+
+
+class SynthesisOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    answer: str
+    confidence: Confidence
+
+
+@dataclass(frozen=True)
+class AgentGraphDependencies:
+    llm_client: LLMClient
+    session: AsyncSession
+
+
+def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
+    async def interpret(state: GraphState) -> dict[str, object]:
+        return await request_interpretation_node(state, dependencies.llm_client)
+
+    async def resolve_asset(state: GraphState) -> dict[str, object]:
+        return await asset_resolution_node(state, dependencies.session)
+
+    async def gather_evidence(state: GraphState) -> dict[str, object]:
+        return await evidence_gathering_node(
+            state,
+            dependencies.llm_client,
+            dependencies.session,
+        )
+
+    async def synthesize(state: GraphState) -> dict[str, object]:
+        return await synthesis_node(state, dependencies.llm_client)
+
+    async def terminal(state: GraphState) -> dict[str, AgentQueryResponse]:
+        return terminal_response_node(state)
+
+    graph = StateGraph(GraphState)
+    graph.add_node(REQUEST_INTERPRETATION_NODE, interpret)
+    graph.add_node(ASSET_RESOLUTION_NODE, resolve_asset)
+    graph.add_node(EVIDENCE_GATHERING_NODE, gather_evidence)
+    graph.add_node(SYNTHESIS_NODE, synthesize)
+    graph.add_node(TERMINAL_RESPONSE_NODE, terminal)
+
+    graph.add_edge(START, REQUEST_INTERPRETATION_NODE)
+    graph.add_edge(REQUEST_INTERPRETATION_NODE, ASSET_RESOLUTION_NODE)
+    graph.add_conditional_edges(
+        ASSET_RESOLUTION_NODE,
+        route_after_asset_resolution,
+        {
+            "terminal": TERMINAL_RESPONSE_NODE,
+            "evidence_gathering": EVIDENCE_GATHERING_NODE,
+        },
+    )
+    graph.add_edge(EVIDENCE_GATHERING_NODE, SYNTHESIS_NODE)
+    graph.add_edge(SYNTHESIS_NODE, TERMINAL_RESPONSE_NODE)
+    graph.add_edge(TERMINAL_RESPONSE_NODE, END)
+    return graph.compile()
+
+
+async def request_interpretation_node(
+    state: GraphState,
+    llm_client: LLMClient,
+) -> dict[str, object]:
+    if state.get("asset_id_hint"):
+        response = await llm_client.generate(
+            [
+                LLMMessage(
+                    role="user",
+                    content=(
+                        "Classify this maintenance request into exactly one supported "
+                        f"intent.\n\nRequest: {state['query']}"
+                    ),
+                )
+            ],
+            tools=[_structured_tool(CLASSIFY_REQUEST_TOOL_NAME, RequestIntentOnly)],
+            tool_choice=LLMToolChoice(type="tool", name=CLASSIFY_REQUEST_TOOL_NAME),
+        )
+        intent_only = _first_tool_input(response, RequestIntentOnly)
+        return {"intent": intent_only.intent}
+
+    response = await llm_client.generate(
+        [
+            LLMMessage(
+                role="user",
+                content=(
+                    "Classify this maintenance request and extract the asset identifier "
+                    f"if one is present.\n\nRequest: {state['query']}"
+                ),
+            )
+        ],
+        tools=[_structured_tool(INTERPRET_REQUEST_TOOL_NAME, RequestInterpretation)],
+        tool_choice=LLMToolChoice(type="tool", name=INTERPRET_REQUEST_TOOL_NAME),
+    )
+    interpretation = _first_tool_input(response, RequestInterpretation)
+    return {
+        "intent": interpretation.intent,
+        "asset_id_hint": interpretation.asset_identifier,
+    }
+
+
+async def asset_resolution_node(
+    state: GraphState,
+    session: AsyncSession,
+) -> dict[str, object]:
+    identifier = state.get("asset_id_hint") or ""
+    result = cast(
+        ResolveAssetResult,
+        await invoke_tool_binding(
+            "resolve_asset",
+            {"identifier": identifier},
+            state,
+            session,
+        ),
+    )
+    return {
+        "asset": result.asset,
+        "asset_resolution_status": result.status,
+        "tool_calls": [
+            _tool_call_record("resolve_asset", {"identifier": identifier}, result, state)
+        ],
+    }
+
+
+async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute:
+    if state.get("asset_resolution_status") == "not_found":
+        return "terminal"
+    return "evidence_gathering"
+
+
+async def evidence_gathering_node(
+    state: GraphState,
+    llm_client: LLMClient,
+    session: AsyncSession,
+) -> dict[str, object]:
+    offered_tool_names = TOOLS_BY_INTENT[state["intent"] or "troubleshooting"]
+    response = await llm_client.generate(
+        [_evidence_message(state)],
+        tools=build_llm_tools(offered_tool_names),
+        tool_choice=LLMToolChoice(type="auto"),
+    )
+
+    tool_call_records: list[ToolCallRecord] = []
+    structured_evidence: list[StructuredEvidenceItem] = []
+    document_evidence = []
+
+    for tool_call in response.tool_calls:
+        result = await invoke_tool_binding(
+            cast(LLMOfferedToolName, tool_call.name),
+            tool_call.input,
+            state,
+            session,
+        )
+        tool_call_records.append(
+            _tool_call_record(
+                tool_call.name,
+                tool_call.input,
+                result,
+                state,
+                len(tool_call_records),
+            )
+        )
+        if isinstance(result, GetAssetStatusResult):
+            structured_evidence.extend(result.classified_readings)
+            structured_evidence.extend(result.active_faults)
+        elif isinstance(result, GetMaintenanceHistoryResult):
+            structured_evidence.extend(result.fault_events)
+            structured_evidence.extend(result.recurrence)
+        elif isinstance(result, SearchMaintenanceDocsResult):
+            document_evidence.extend(result.results)
+
+    return {
+        "tool_calls": tool_call_records,
+        "structured_evidence": structured_evidence,
+        "document_evidence": document_evidence,
+    }
+
+
+async def synthesis_node(
+    state: GraphState,
+    llm_client: LLMClient,
+) -> dict[str, object]:
+    response = await llm_client.generate(
+        [_synthesis_message(state)],
+        tools=[_structured_tool(SYNTHESIZE_RESPONSE_TOOL_NAME, SynthesisOutput)],
+        tool_choice=LLMToolChoice(type="tool", name=SYNTHESIZE_RESPONSE_TOOL_NAME),
+    )
+    synthesis = _first_tool_input(response, SynthesisOutput)
+    return {
+        "synthesis_answer": synthesis.answer,
+        "synthesis_confidence": synthesis.confidence,
+    }
+
+
+def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
+    error = state.get("errors", [])[-1] if state.get("errors") else None
+    asset = state.get("asset")
+    status = _terminal_status(state)
+    response = AgentQueryResponse(
+        request_id=state.get("request_id", DEFAULT_REQUEST_ID),
+        status=status,
+        asset_id=asset.asset_id if asset is not None else state.get("asset_id_hint"),
+        answer=None if status in {"unknown_asset", "error"} else state.get("synthesis_answer"),
+        confidence=None
+        if status in {"unknown_asset", "error"}
+        else state.get("synthesis_confidence"),
+        structured_evidence=_response_structured_evidence(state),
+        document_evidence=[
+            DocumentEvidence(
+                document_id=hit.document_id,
+                section=hit.section,
+                excerpt=hit.evidence_text,
+            )
+            for hit in state.get("document_evidence", [])
+        ],
+        pending_action=None,
+        error=AgentError(code=error.code, message=error.message) if error is not None else None,
+    )
+    return {"response": response}
+
+
+def _terminal_status(state: GraphState) -> AgentStatus:
+    if state.get("errors"):
+        return "error"
+    if state.get("asset_resolution_status") == "not_found":
+        return "unknown_asset"
+    if state.get("approval_status") == "pending_approval":
+        return "needs_approval"
+    return "ok"
+
+
+def _structured_tool(name: str, model: type[BaseModel]) -> LLMTool:
+    return LLMTool(
+        name=name,
+        description=f"Return structured data for {name}.",
+        input_schema=model.model_json_schema(),
+    )
+
+
+def _first_tool_input(response: LLMResponse, model: type[BaseModel]) -> Any:
+    if not response.tool_calls:
+        raise ValueError("Expected a structured tool response from the LLM.")
+    return model.model_validate(response.tool_calls[0].input)
+
+
+def _evidence_message(state: GraphState) -> LLMMessage:
+    return LLMMessage(
+        role="user",
+        content=(
+            "Choose any maintenance tools needed to gather evidence. "
+            "Return no tool calls when no more evidence is needed.\n\n"
+            f"Intent: {state.get('intent')}\n"
+            f"Asset: {state.get('asset')}\n"
+            f"Request: {state['query']}"
+        ),
+    )
+
+
+def _synthesis_message(state: GraphState) -> LLMMessage:
+    return LLMMessage(
+        role="user",
+        content=(
+            "Synthesize the final maintenance answer from the accumulated evidence.\n\n"
+            f"Request: {state['query']}\n"
+            f"Asset: {state.get('asset')}\n"
+            f"Structured evidence: {state.get('structured_evidence', [])}\n"
+            f"Document evidence: {state.get('document_evidence', [])}\n"
+            f"Tool trace: {state.get('tool_calls', [])}"
+        ),
+    )
+
+
+def _tool_call_record(
+    tool_name: str,
+    args: dict[str, object],
+    result: ToolResult,
+    state: GraphState,
+    offset: int = 0,
+) -> ToolCallRecord:
+    return ToolCallRecord(
+        tool_name=tool_name,
+        args=args,
+        result=result,
+        timestamp=datetime.now(UTC),
+        sequence=len(state.get("tool_calls", [])) + offset + 1,
+    )
+
+
+def _response_structured_evidence(state: GraphState) -> list[StructuredEvidence]:
+    return [
+        StructuredEvidence(
+            source=item.__class__.__name__,
+            summary=str(item),
+            reference_id=_reference_id(item),
+        )
+        for item in state.get("structured_evidence", [])
+    ]
+
+
+def _reference_id(item: object) -> str | None:
+    for field_name in (
+        "event_id",
+        "fault_code",
+        "operating_limit_id",
+        "maintenance_id",
+        "work_order_id",
+    ):
+        value = getattr(item, field_name, None)
+        if value is not None:
+            return str(value)
+    return None

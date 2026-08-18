@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import operator
 from datetime import datetime
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord
-from maintenance_agent.schemas.agent import AgentQueryResponse
+from maintenance_agent.schemas.agent import AgentQueryResponse, Confidence
 from maintenance_agent.tools.get_asset_status import (
     ClassifiedReading,
     GetAssetStatusResult,
@@ -72,6 +72,7 @@ class ErrorRecord(BaseModel):
 
 
 class GraphState(TypedDict):
+    request_id: NotRequired[str]
     query: str
     asset_id_hint: str | None
     fault_code_hint: str | None
@@ -84,4 +85,6 @@ class GraphState(TypedDict):
     work_order_draft: WorkOrderDraft | None
     approval_status: ApprovalStatus
     errors: Annotated[list[ErrorRecord], operator.add]
+    synthesis_answer: NotRequired[str | None]
+    synthesis_confidence: NotRequired[Confidence | None]
     response: AgentQueryResponse | None
