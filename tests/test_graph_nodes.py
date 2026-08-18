@@ -17,13 +17,39 @@ from maintenance_agent.llm.client import (
 )
 from maintenance_agent.orchestration import graph as graph_module
 from maintenance_agent.orchestration.graph import (
+    EVIDENCE_GATHERING_NODE,
+    MAX_EVIDENCE_GATHERING_ITERATIONS,
     AgentGraphDependencies,
     build_agent_graph,
     evidence_gathering_node,
     request_interpretation_node,
 )
 from maintenance_agent.orchestration.state import GraphState
+from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
+from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
+from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+
+
+def test_evidence_gathering_is_single_conditional_self_loop() -> None:
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient([LLMResponse()]),
+            session=cast(AsyncSession, object()),
+        )
+    )
+
+    evidence_edges = [
+        edge
+        for edge in compiled_graph.get_graph().edges
+        if edge.source == EVIDENCE_GATHERING_NODE
+    ]
+
+    assert {(edge.target, edge.conditional) for edge in evidence_edges} == {
+        (EVIDENCE_GATHERING_NODE, True),
+        ("synthesis", True),
+        ("terminal_response", True),
+    }
 
 
 @pytest.mark.asyncio
@@ -137,6 +163,96 @@ def test_terminal_node_is_only_agent_query_response_constructor() -> None:
     assert constructors == ["terminal_response_node"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence_tool_names",
+    [
+        ["search_maintenance_docs", "get_maintenance_history"],
+        ["get_maintenance_history", "search_maintenance_docs"],
+    ],
+)
+async def test_different_evidence_tool_orders_execute_through_same_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_tool_names: list[str],
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            _interpret_response("troubleshooting", "PUMP-103"),
+            *[
+                LLMResponse(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"tool-{index}",
+                            name=tool_name,
+                            input={"query": "bearing overheating"}
+                            if tool_name == "search_maintenance_docs"
+                            else {},
+                        )
+                    ]
+                )
+                for index, tool_name in enumerate(evidence_tool_names, start=1)
+            ],
+            LLMResponse(tool_calls=[]),
+            _synthesis_response(),
+        ]
+    )
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=llm_client,
+            session=cast(AsyncSession, object()),
+        )
+    )
+
+    final_state = await compiled_graph.ainvoke(_state())
+
+    assert final_state["response"].status == "ok"
+    assert [record.tool_name for record in final_state["tool_calls"]] == [
+        "resolve_asset",
+        *evidence_tool_names,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pathological_evidence_loop_stops_at_iteration_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            _interpret_response("troubleshooting", "PUMP-103"),
+            *[
+                LLMResponse(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"tool-{index}",
+                            name="search_maintenance_docs",
+                            input={"query": f"bearing overheating {index}"},
+                        )
+                    ]
+                )
+                for index in range(MAX_EVIDENCE_GATHERING_ITERATIONS)
+            ],
+            _synthesis_response(),
+        ]
+    )
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=llm_client,
+            session=cast(AsyncSession, object()),
+        )
+    )
+
+    final_state = await compiled_graph.ainvoke(_state())
+
+    assert final_state["response"].status == "ok"
+    assert final_state["evidence_gathering_iterations"] == MAX_EVIDENCE_GATHERING_ITERATIONS
+    assert [record.tool_name for record in final_state["tool_calls"]] == [
+        "resolve_asset",
+        *["search_maintenance_docs"] * MAX_EVIDENCE_GATHERING_ITERATIONS,
+    ]
+
+
 class _RecordingLLMClient:
     def __init__(self, responses: Sequence[LLMResponse]) -> None:
         self._responses = list(responses)
@@ -158,6 +274,54 @@ class _RecordingLLMClient:
         if not self._responses:
             raise AssertionError("Unexpected LLM call.")
         return self._responses.pop(0)
+
+
+async def _fake_invoke_tool_binding(
+    tool_name: str,
+    args: dict[str, object],
+    state: GraphState,
+    session: AsyncSession,
+) -> object:
+    del args, state, session
+    if tool_name == "resolve_asset":
+        return ResolveAssetResult(status="resolved", asset=_asset())
+    if tool_name == "get_asset_status":
+        return GetAssetStatusResult(asset=_asset(), telemetry=None)
+    if tool_name == "get_maintenance_history":
+        return GetMaintenanceHistoryResult(asset=_asset())
+    if tool_name == "search_maintenance_docs":
+        return SearchMaintenanceDocsResult(query="bearing overheating")
+    raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+
+def _interpret_response(intent: str, asset_identifier: str) -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCallRequest(
+                id="interpret-1",
+                name="interpret_request",
+                input={
+                    "intent": intent,
+                    "asset_identifier": asset_identifier,
+                },
+            )
+        ]
+    )
+
+
+def _synthesis_response() -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCallRequest(
+                id="synthesis-1",
+                name="synthesize_response",
+                input={
+                    "answer": "Inspect the bearing and follow the maintenance procedure.",
+                    "confidence": "confirmed",
+                },
+            )
+        ]
+    )
 
 
 def _asset() -> AssetRecord:
@@ -194,6 +358,8 @@ def _state(
             "work_order_draft": None,
             "approval_status": "none",
             "errors": [],
+            "evidence_gathering_iterations": 0,
+            "last_evidence_tool_call_count": 0,
             "synthesis_answer": None,
             "synthesis_confidence": None,
             "response": None,

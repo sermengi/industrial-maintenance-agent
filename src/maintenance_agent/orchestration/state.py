@@ -85,6 +85,8 @@ class GraphState(TypedDict):
     work_order_draft: WorkOrderDraft | None
     approval_status: ApprovalStatus
     errors: Annotated[list[ErrorRecord], operator.add]
+    evidence_gathering_iterations: NotRequired[int]
+    last_evidence_tool_call_count: NotRequired[int]
     synthesis_answer: NotRequired[str | None]
     synthesis_confidence: NotRequired[Confidence | None]
     response: AgentQueryResponse | None

@@ -47,12 +47,14 @@ SYNTHESIS_NODE = "synthesis"
 TERMINAL_RESPONSE_NODE = "terminal_response"
 
 InterpretationRoute = Literal["terminal", "evidence_gathering"]
+EvidenceGatheringRoute = Literal["evidence_gathering", "synthesis", "terminal"]
 
 INTERPRET_REQUEST_TOOL_NAME = "interpret_request"
 CLASSIFY_REQUEST_TOOL_NAME = "classify_request"
 SYNTHESIZE_RESPONSE_TOOL_NAME = "synthesize_response"
 
 DEFAULT_REQUEST_ID = "graph-local-request"
+MAX_EVIDENCE_GATHERING_ITERATIONS = 6
 
 TOOLS_BY_INTENT: dict[Intent, tuple[LLMOfferedToolName, ...]] = {
     "procedure_lookup": ("search_maintenance_docs",),
@@ -147,7 +149,15 @@ def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
             "evidence_gathering": EVIDENCE_GATHERING_NODE,
         },
     )
-    graph.add_edge(EVIDENCE_GATHERING_NODE, SYNTHESIS_NODE)
+    graph.add_conditional_edges(
+        EVIDENCE_GATHERING_NODE,
+        route_after_evidence_gathering,
+        {
+            "evidence_gathering": EVIDENCE_GATHERING_NODE,
+            "synthesis": SYNTHESIS_NODE,
+            "terminal": TERMINAL_RESPONSE_NODE,
+        },
+    )
     graph.add_edge(SYNTHESIS_NODE, TERMINAL_RESPONSE_NODE)
     graph.add_edge(TERMINAL_RESPONSE_NODE, END)
     return graph.compile()
@@ -223,6 +233,16 @@ async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute
     return "evidence_gathering"
 
 
+async def route_after_evidence_gathering(state: GraphState) -> EvidenceGatheringRoute:
+    if state.get("approval_status") == "pending_approval":
+        return "terminal"
+    if not state.get("last_evidence_tool_call_count", 0):
+        return "synthesis"
+    if state.get("evidence_gathering_iterations", 0) >= MAX_EVIDENCE_GATHERING_ITERATIONS:
+        return "synthesis"
+    return "evidence_gathering"
+
+
 async def evidence_gathering_node(
     state: GraphState,
     llm_client: LLMClient,
@@ -238,8 +258,16 @@ async def evidence_gathering_node(
     tool_call_records: list[ToolCallRecord] = []
     structured_evidence: list[StructuredEvidenceItem] = []
     document_evidence = []
+    next_iteration = state.get("evidence_gathering_iterations", 0) + 1
 
     for tool_call in response.tool_calls:
+        if tool_call.name == "create_work_order_draft":
+            return {
+                "approval_status": "pending_approval",
+                "evidence_gathering_iterations": next_iteration,
+                "last_evidence_tool_call_count": 1,
+            }
+
         result = await invoke_tool_binding(
             cast(LLMOfferedToolName, tool_call.name),
             tool_call.input,
@@ -268,6 +296,8 @@ async def evidence_gathering_node(
         "tool_calls": tool_call_records,
         "structured_evidence": structured_evidence,
         "document_evidence": document_evidence,
+        "evidence_gathering_iterations": next_iteration,
+        "last_evidence_tool_call_count": len(response.tool_calls),
     }
 
 
