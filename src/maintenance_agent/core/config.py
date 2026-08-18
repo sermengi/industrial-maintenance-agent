@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     test_database_url: str | None = Field(default=None, validation_alias="TEST_DATABASE_URL")
     voyage_api_key: str | None = Field(default=None, validation_alias="VOYAGE_API_KEY")
     rag_embedding_backend: str = Field(default="voyage", validation_alias="RAG_EMBEDDING_BACKEND")
+    anthropic_api_key: str | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(
+        default="claude-sonnet-4-20250514",
+        validation_alias="ANTHROPIC_MODEL",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
