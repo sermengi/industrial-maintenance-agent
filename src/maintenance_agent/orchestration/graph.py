@@ -109,7 +109,6 @@ class SynthesisOutput(BaseModel):
 @dataclass(frozen=True)
 class AgentGraphDependencies:
     llm_client: LLMClient
-    session: AsyncSession
 
 
 def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
@@ -117,13 +116,13 @@ def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
         return await request_interpretation_node(state, dependencies.llm_client)
 
     async def resolve_asset(state: GraphState) -> dict[str, object]:
-        return await asset_resolution_node(state, dependencies.session)
+        return await asset_resolution_node(state, _session_from_state(state))
 
     async def gather_evidence(state: GraphState) -> dict[str, object]:
         return await evidence_gathering_node(
             state,
             dependencies.llm_client,
-            dependencies.session,
+            _session_from_state(state),
         )
 
     async def synthesize(state: GraphState) -> dict[str, object]:
@@ -352,6 +351,13 @@ def _terminal_status(state: GraphState) -> AgentStatus:
     if state.get("approval_status") == "pending_approval":
         return "needs_approval"
     return "ok"
+
+
+def _session_from_state(state: GraphState) -> AsyncSession:
+    session = state.get("session")
+    if session is None:
+        raise RuntimeError("Graph state is missing the request-scoped database session.")
+    return session
 
 
 def _structured_tool(name: str, model: type[BaseModel]) -> LLMTool:

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord
 from maintenance_agent.schemas.agent import AgentQueryResponse, Confidence
@@ -73,6 +74,7 @@ class ErrorRecord(BaseModel):
 
 class GraphState(TypedDict):
     request_id: NotRequired[str]
+    session: NotRequired[AsyncSession]
     query: str
     asset_id_hint: str | None
     fault_code_hint: str | None

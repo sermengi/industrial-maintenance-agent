@@ -35,14 +35,11 @@ def test_evidence_gathering_is_single_conditional_self_loop() -> None:
     compiled_graph = build_agent_graph(
         AgentGraphDependencies(
             llm_client=_RecordingLLMClient([LLMResponse()]),
-            session=cast(AsyncSession, object()),
         )
     )
 
     evidence_edges = [
-        edge
-        for edge in compiled_graph.get_graph().edges
-        if edge.source == EVIDENCE_GATHERING_NODE
+        edge for edge in compiled_graph.get_graph().edges if edge.source == EVIDENCE_GATHERING_NODE
     ]
 
     assert {(edge.target, edge.conditional) for edge in evidence_edges} == {
@@ -104,7 +101,6 @@ async def test_unknown_asset_routes_to_terminal_without_evidence_or_synthesis(
     compiled_graph = build_agent_graph(
         AgentGraphDependencies(
             llm_client=llm_client,
-            session=cast(AsyncSession, object()),
         )
     )
 
@@ -200,7 +196,6 @@ async def test_different_evidence_tool_orders_execute_through_same_graph(
     compiled_graph = build_agent_graph(
         AgentGraphDependencies(
             llm_client=llm_client,
-            session=cast(AsyncSession, object()),
         )
     )
 
@@ -239,7 +234,6 @@ async def test_pathological_evidence_loop_stops_at_iteration_cap(
     compiled_graph = build_agent_graph(
         AgentGraphDependencies(
             llm_client=llm_client,
-            session=cast(AsyncSession, object()),
         )
     )
 
@@ -346,6 +340,7 @@ def _state(
         GraphState,
         {
             "request_id": "test-request",
+            "session": cast(AsyncSession, object()),
             "query": query,
             "asset_id_hint": asset_id_hint,
             "fault_code_hint": None,
