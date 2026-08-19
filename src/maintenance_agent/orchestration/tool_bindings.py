@@ -124,7 +124,7 @@ TOOL_INPUT_MODELS: dict[CanonicalToolName, type[ToolInputModel]] = {
     tool_name: binding.input_model for tool_name, binding in TOOL_BINDINGS.items()
 }
 TOOL_DESCRIPTIONS: dict[LLMOfferedToolName, str] = {
-    cast(LLMOfferedToolName, tool_name): cast(str, binding.llm_description)
+    cast(LLMOfferedToolName, tool_name): binding.llm_description
     for tool_name, binding in TOOL_BINDINGS.items()
     if binding.llm_description is not None and not binding.consequential
 }
