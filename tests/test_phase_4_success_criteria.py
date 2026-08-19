@@ -3,6 +3,7 @@ import inspect
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
+from decimal import Decimal
 from typing import cast
 
 import httpx
@@ -27,11 +28,14 @@ from maintenance_agent.orchestration.graph import (
     build_agent_graph,
 )
 from maintenance_agent.orchestration.state import GraphState
-from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
+from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
-from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+from maintenance_agent.tools.search_maintenance_docs import (
+    DocSearchHit,
+    SearchMaintenanceDocsResult,
+)
 
 
 @pytest.mark.asyncio
@@ -220,6 +224,9 @@ async def test_non_hitl_golden_scenarios_run_through_agent_query_api(
         assert payload["error"] is None
     else:
         assert payload["asset_id"] == asset_id
+    if asset_id == "PUMP-101":
+        assert payload["status"] == "ok"
+        assert payload["confidence"] == "hypothesis"
     assert [record.name for record in llm_client.tool_records] == evidence_tools
 
 
@@ -265,11 +272,15 @@ async def _fake_invoke_tool_binding(
             return ResolveAssetResult(status="not_found")
         return ResolveAssetResult(status="resolved", asset=_asset(identifier))
     if tool_name == "get_asset_status":
-        return GetAssetStatusResult(asset=_asset("PUMP-103"), telemetry=None)
+        return GetAssetStatusResult(
+            asset=_asset("PUMP-103"),
+            telemetry=None,
+            classified_readings=[_classified_reading()],
+        )
     if tool_name == "get_maintenance_history":
         return GetMaintenanceHistoryResult(asset=_asset("PUMP-103"))
     if tool_name == "search_maintenance_docs":
-        return SearchMaintenanceDocsResult(query="maintenance docs")
+        return SearchMaintenanceDocsResult(query="maintenance docs", results=[_doc_hit()])
     if tool_name == "get_plant_policy":
         return GetPlantPolicyResult(policy_type="recurring_fault")
     raise AssertionError(f"Unexpected tool call: {tool_name}")
@@ -319,6 +330,35 @@ def _synthesis_response() -> LLMResponse:
                 },
             )
         ]
+    )
+
+
+def _classified_reading() -> ClassifiedReading:
+    return ClassifiedReading(
+        metric="bearing_temperature_c",
+        value=Decimal("78.0"),
+        unit="C",
+        tier="normal",
+        operating_limit_id="OL-002",
+        rule_text="Normal < 82; high >= 82",
+    )
+
+
+def _doc_hit() -> DocSearchHit:
+    return DocSearchHit(
+        chunk_id="DOC-03-C1",
+        document_id="DOC-03",
+        section="Mechanical seal inspection",
+        page="1",
+        topic="seal inspection",
+        manufacturer="Synthetic",
+        source_product_family="CP",
+        applicability="PUMP-103",
+        source_url="synthetic://DOC-03",
+        content_provenance="synthetic",
+        linked_fault_codes=["F102"],
+        evidence_text="Inspect the seal and bearing assembly.",
+        similarity_score=0.9,
     )
 
 

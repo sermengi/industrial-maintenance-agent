@@ -268,6 +268,12 @@ async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute
 async def route_after_evidence_gathering(state: GraphState) -> EvidenceGatheringRoute:
     if state.get("approval_status") == "pending_approval":
         return "terminal"
+    loop_complete = (
+        not state.get("last_evidence_tool_call_count", 0)
+        or state.get("evidence_gathering_iterations", 0) >= MAX_EVIDENCE_GATHERING_ITERATIONS
+    )
+    if loop_complete and _has_insufficient_evidence(state):
+        return "terminal"
     if not state.get("last_evidence_tool_call_count", 0):
         return "synthesis"
     if state.get("evidence_gathering_iterations", 0) >= MAX_EVIDENCE_GATHERING_ITERATIONS:
@@ -363,7 +369,7 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
         asset_id=_response_asset_id(state, status),
         answer=_response_answer(state, status),
         confidence=None
-        if status in {"unknown_asset", "error"}
+        if status in {"unknown_asset", "insufficient_evidence", "error"}
         else state.get("synthesis_confidence"),
         structured_evidence=_response_structured_evidence(state),
         document_evidence=[
@@ -387,6 +393,8 @@ def _terminal_status(state: GraphState) -> AgentStatus:
         return "unknown_asset"
     if state.get("approval_status") == "pending_approval":
         return "needs_approval"
+    if _has_insufficient_evidence(state):
+        return "insufficient_evidence"
     return "ok"
 
 
@@ -402,6 +410,8 @@ def _response_asset_id(state: GraphState, status: AgentStatus) -> str | None:
 def _response_answer(state: GraphState, status: AgentStatus) -> str | None:
     if status == "unknown_asset":
         return _unknown_asset_answer(state)
+    if status == "insufficient_evidence":
+        return _insufficient_evidence_answer()
     if status == "error":
         return None
     return state.get("synthesis_answer")
@@ -424,6 +434,21 @@ def _attempted_asset_identifier(state: GraphState) -> str | None:
         identifier = record.args.get("identifier")
         return str(identifier) if identifier is not None else None
     return None
+
+
+def _has_insufficient_evidence(state: GraphState) -> bool:
+    if state.get("asset_resolution_status") != "resolved":
+        return False
+    if state.get("intent") == "procedure_lookup":
+        return not state.get("document_evidence", [])
+    return not state.get("structured_evidence", []) and not state.get("document_evidence", [])
+
+
+def _insufficient_evidence_answer() -> str:
+    return (
+        "Not enough evidence was found to answer this request. "
+        "Try rephrasing or providing more detail."
+    )
 
 
 def _session_from_state(state: GraphState) -> AsyncSession:
@@ -516,7 +541,10 @@ def _synthesis_message(state: GraphState) -> LLMMessage:
     return LLMMessage(
         role="user",
         content=(
-            "Synthesize the final maintenance answer from the accumulated evidence.\n\n"
+            "Synthesize the final maintenance answer from the accumulated evidence. "
+            "Set confidence to confirmed only when the cited evidence directly supports "
+            "the answer; set confidence to hypothesis when evidence is relevant but "
+            "does not prove a root cause or diagnosis.\n\n"
             f"Request: {state['query']}\n"
             f"Asset: {state.get('asset')}\n"
             f"Structured evidence: {state.get('structured_evidence', [])}\n"

@@ -2,6 +2,7 @@ import ast
 import inspect
 from collections.abc import Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Any, cast
 
 import pytest
@@ -28,10 +29,13 @@ from maintenance_agent.orchestration.graph import (
     synthesis_node,
 )
 from maintenance_agent.orchestration.state import GraphState
-from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
+from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
-from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+from maintenance_agent.tools.search_maintenance_docs import (
+    DocSearchHit,
+    SearchMaintenanceDocsResult,
+)
 
 
 def test_evidence_gathering_is_single_conditional_self_loop() -> None:
@@ -248,6 +252,105 @@ def test_terminal_node_is_only_agent_query_response_constructor() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_troubleshooting_evidence_routes_to_insufficient_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            _interpret_response("troubleshooting", "PUMP-103"),
+            LLMResponse(tool_calls=[]),
+        ]
+    )
+    compiled_graph = build_agent_graph(AgentGraphDependencies(llm_client=llm_client))
+
+    final_state = await compiled_graph.ainvoke(_state())
+
+    assert final_state["response"].status == "insufficient_evidence"
+    assert final_state["response"].asset_id == "PUMP-103"
+    assert final_state["response"].confidence is None
+    assert final_state["response"].error is None
+    assert final_state["response"].answer == (
+        "Not enough evidence was found to answer this request. "
+        "Try rephrasing or providing more detail."
+    )
+    assert llm_client.tool_names_by_call == [
+        ["interpret_request"],
+        [
+            "get_asset_status",
+            "get_maintenance_history",
+            "search_maintenance_docs",
+            "get_plant_policy",
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_empty_procedure_lookup_document_evidence_routes_to_insufficient_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            _interpret_response("procedure_lookup", "PUMP-103"),
+            LLMResponse(tool_calls=[]),
+        ]
+    )
+    compiled_graph = build_agent_graph(AgentGraphDependencies(llm_client=llm_client))
+
+    final_state = await compiled_graph.ainvoke(_state(query="Find procedure for PUMP-103."))
+
+    assert final_state["response"].status == "insufficient_evidence"
+    assert final_state["response"].asset_id == "PUMP-103"
+    assert final_state["response"].confidence is None
+    assert final_state["response"].error is None
+    assert llm_client.tool_names_by_call == [["interpret_request"], ["search_maintenance_docs"]]
+
+
+@pytest.mark.asyncio
+async def test_procedure_lookup_document_evidence_routes_to_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_invoke_tool_binding(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        del args, state, session
+        if tool_name == "resolve_asset":
+            return ResolveAssetResult(status="resolved", asset=_asset())
+        if tool_name == "search_maintenance_docs":
+            return SearchMaintenanceDocsResult(query="procedure", results=[_doc_hit()])
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", fake_invoke_tool_binding)
+    llm_client = _RecordingLLMClient(
+        [
+            _interpret_response("procedure_lookup", "PUMP-103"),
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="search-1",
+                        name="search_maintenance_docs",
+                        input={"query": "procedure"},
+                    )
+                ]
+            ),
+            LLMResponse(tool_calls=[]),
+            _synthesis_response(),
+        ]
+    )
+    compiled_graph = build_agent_graph(AgentGraphDependencies(llm_client=llm_client))
+
+    final_state = await compiled_graph.ainvoke(_state(query="Find procedure for PUMP-103."))
+
+    assert final_state["response"].status == "ok"
+    assert final_state["document_evidence"][0].document_id == "DOC-03"
+    assert llm_client.tool_names_by_call[-1] == ["synthesize_response"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "evidence_tool_names",
     [
@@ -368,11 +471,15 @@ async def _fake_invoke_tool_binding(
     if tool_name == "resolve_asset":
         return ResolveAssetResult(status="resolved", asset=_asset())
     if tool_name == "get_asset_status":
-        return GetAssetStatusResult(asset=_asset(), telemetry=None)
+        return GetAssetStatusResult(
+            asset=_asset(),
+            telemetry=None,
+            classified_readings=[_classified_reading()],
+        )
     if tool_name == "get_maintenance_history":
         return GetMaintenanceHistoryResult(asset=_asset())
     if tool_name == "search_maintenance_docs":
-        return SearchMaintenanceDocsResult(query="bearing overheating")
+        return SearchMaintenanceDocsResult(query="bearing overheating", results=[_doc_hit()])
     raise AssertionError(f"Unexpected tool call: {tool_name}")
 
 
@@ -404,6 +511,35 @@ def _synthesis_response() -> LLMResponse:
                 },
             )
         ]
+    )
+
+
+def _classified_reading() -> ClassifiedReading:
+    return ClassifiedReading(
+        metric="bearing_temperature_c",
+        value=Decimal("84.2"),
+        unit="C",
+        tier="critical",
+        operating_limit_id="OL-002",
+        rule_text="Normal < 82; high >= 82",
+    )
+
+
+def _doc_hit() -> DocSearchHit:
+    return DocSearchHit(
+        chunk_id="DOC-03-C1",
+        document_id="DOC-03",
+        section="Mechanical seal inspection",
+        page="1",
+        topic="seal inspection",
+        manufacturer="Synthetic",
+        source_product_family="CP",
+        applicability="PUMP-103",
+        source_url="synthetic://DOC-03",
+        content_provenance="synthetic",
+        linked_fault_codes=["F102"],
+        evidence_text="Inspect the seal and bearing assembly.",
+        similarity_score=0.9,
     )
 
 
