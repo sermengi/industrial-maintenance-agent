@@ -17,8 +17,10 @@ from maintenance_agent.llm.client import (
 )
 from maintenance_agent.orchestration import graph as graph_module
 from maintenance_agent.orchestration.graph import (
+    ASSET_RESOLUTION_NODE,
     EVIDENCE_GATHERING_NODE,
     MAX_EVIDENCE_GATHERING_ITERATIONS,
+    SYNTHESIS_NODE,
     AgentGraphDependencies,
     build_agent_graph,
     evidence_gathering_node,
@@ -108,8 +110,40 @@ async def test_unknown_asset_routes_to_terminal_without_evidence_or_synthesis(
     final_state = await compiled_graph.ainvoke(_state(query="Diagnose PUMP-999."))
 
     assert final_state["response"].status == "unknown_asset"
-    assert final_state["response"].asset_id == "PUMP-999"
+    assert final_state["response"].asset_id is None
+    assert final_state["response"].error is None
+    assert final_state["response"].answer == (
+        "I couldn't find an asset matching 'PUMP-999'. "
+        "Please provide a valid asset ID."
+    )
+    assert final_state["response"].confidence is None
+    assert final_state["tool_calls"][-1].args["identifier"] == "PUMP-999"
+    assert final_state["structured_evidence"] == []
+    assert final_state["document_evidence"] == []
+    assert final_state["synthesis_answer"] is None
     assert llm_client.tool_names_by_call == [["interpret_request"]]
+
+
+def test_unknown_asset_branch_has_no_edge_to_evidence_or_synthesis() -> None:
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient([LLMResponse()]),
+        )
+    )
+
+    asset_resolution_edges = [
+        edge for edge in compiled_graph.get_graph().edges if edge.source == ASSET_RESOLUTION_NODE
+    ]
+
+    assert (SYNTHESIS_NODE, True) not in {
+        (edge.target, edge.conditional) for edge in asset_resolution_edges
+    }
+    assert {
+        (edge.target, edge.conditional) for edge in asset_resolution_edges
+    } == {
+        ("terminal_response", True),
+        (EVIDENCE_GATHERING_NODE, True),
+    }
 
 
 @pytest.mark.asyncio

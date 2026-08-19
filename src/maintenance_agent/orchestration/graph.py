@@ -356,13 +356,12 @@ async def synthesis_node(
 
 def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
     error = state.get("errors", [])[-1] if state.get("errors") else None
-    asset = state.get("asset")
     status = _terminal_status(state)
     response = AgentQueryResponse(
         request_id=state.get("request_id", DEFAULT_REQUEST_ID),
         status=status,
-        asset_id=asset.asset_id if asset is not None else state.get("asset_id_hint"),
-        answer=None if status in {"unknown_asset", "error"} else state.get("synthesis_answer"),
+        asset_id=_response_asset_id(state, status),
+        answer=_response_answer(state, status),
         confidence=None
         if status in {"unknown_asset", "error"}
         else state.get("synthesis_confidence"),
@@ -389,6 +388,42 @@ def _terminal_status(state: GraphState) -> AgentStatus:
     if state.get("approval_status") == "pending_approval":
         return "needs_approval"
     return "ok"
+
+
+def _response_asset_id(state: GraphState, status: AgentStatus) -> str | None:
+    if status == "unknown_asset":
+        return None
+    asset = state.get("asset")
+    if asset is not None:
+        return asset.asset_id
+    return state.get("asset_id_hint")
+
+
+def _response_answer(state: GraphState, status: AgentStatus) -> str | None:
+    if status == "unknown_asset":
+        return _unknown_asset_answer(state)
+    if status == "error":
+        return None
+    return state.get("synthesis_answer")
+
+
+def _unknown_asset_answer(state: GraphState) -> str:
+    identifier = _attempted_asset_identifier(state)
+    if identifier:
+        return (
+            f"I couldn't find an asset matching '{identifier}'. "
+            "Please provide a valid asset ID."
+        )
+    return "I couldn't find a matching asset. Please provide a valid asset ID."
+
+
+def _attempted_asset_identifier(state: GraphState) -> str | None:
+    for record in reversed(state.get("tool_calls", [])):
+        if record.tool_name != "resolve_asset":
+            continue
+        identifier = record.args.get("identifier")
+        return str(identifier) if identifier is not None else None
+    return None
 
 
 def _session_from_state(state: GraphState) -> AsyncSession:

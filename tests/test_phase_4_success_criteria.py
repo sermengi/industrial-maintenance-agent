@@ -214,7 +214,12 @@ async def test_non_hitl_golden_scenarios_run_through_agent_query_api(
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == expected_status
-    assert payload["asset_id"] == asset_id
+    if expected_status == "unknown_asset":
+        assert payload["asset_id"] is None
+        assert asset_id in payload["answer"]
+        assert payload["error"] is None
+    else:
+        assert payload["asset_id"] == asset_id
     assert [record.name for record in llm_client.tool_records] == evidence_tools
 
 
