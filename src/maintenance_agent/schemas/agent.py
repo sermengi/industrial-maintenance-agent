@@ -51,6 +51,7 @@ class AgentQueryResponse(BaseModel):
     asset_id: str | None = None
     answer: str | None = None
     confidence: Confidence | None = None
+    evidence_used: list[str] = Field(default_factory=list)
     structured_evidence: list[StructuredEvidence] = Field(default_factory=list)
     document_evidence: list[DocumentEvidence] = Field(default_factory=list)
     pending_action: PendingAction | None = None

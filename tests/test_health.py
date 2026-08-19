@@ -49,6 +49,7 @@ async def test_agent_query_returns_validated_graph_response(
         "asset_id": "PUMP-103",
         "answer": "Inspect the bearing and follow the maintenance procedure.",
         "confidence": "confirmed",
+        "evidence_used": [],
         "structured_evidence": [],
         "document_evidence": [],
         "pending_action": None,
@@ -113,6 +114,7 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     assert response.status == "error"
     assert response.asset_id == "PUMP-103"
     assert response.answer is None
+    assert response.evidence_used == []
     assert response.structured_evidence == []
     assert response.document_evidence == []
     assert response.error == AgentError(

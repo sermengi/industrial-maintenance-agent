@@ -37,6 +37,7 @@ Example Phase 0 response:
   "asset_id": null,
   "answer": "Agent query handling is not implemented yet.",
   "confidence": null,
+  "evidence_used": [],
   "structured_evidence": [],
   "document_evidence": [],
   "pending_action": null,

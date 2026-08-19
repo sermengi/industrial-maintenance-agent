@@ -515,6 +515,9 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
         confidence=None
         if status in {"unknown_asset", "insufficient_evidence", "error"}
         else state.get("synthesis_confidence"),
+        evidence_used=[]
+        if status in {"unknown_asset", "insufficient_evidence", "error"}
+        else state.get("synthesis_evidence_used", []),
         structured_evidence=[] if status == "error" else _response_structured_evidence(state),
         document_evidence=[
             DocumentEvidence(

@@ -335,9 +335,28 @@ def test_terminal_response_surfaces_structured_evidence_provenance() -> None:
     response = terminal_response_node(state)["response"]
 
     assert response.status == "ok"
+    assert response.evidence_used == ["TS-001"]
     assert response.structured_evidence[0].source_type == "telemetry_snapshot"
     assert response.structured_evidence[0].source_id == "TS-001"
     assert response.structured_evidence[0].reference_id == "TS-001"
+
+
+def test_terminal_response_exposes_cited_subset_without_filtering_retrieved_evidence() -> None:
+    state = _state(intent="procedure_lookup", asset=_asset(asset_id="PUMP-104"))
+    state["asset_resolution_status"] = "resolved"
+    state["document_evidence"] = [
+        _doc_hit(document_id="DOC-01"),
+        _doc_hit(document_id="DOC-02"),
+    ]
+    state["synthesis_answer"] = "Inspect the mechanical seal."
+    state["synthesis_confidence"] = "hypothesis"
+    state["synthesis_evidence_used"] = ["DOC-01"]
+
+    response = terminal_response_node(state)["response"]
+
+    assert response.status == "ok"
+    assert response.evidence_used == ["DOC-01"]
+    assert [hit.document_id for hit in response.document_evidence] == ["DOC-01", "DOC-02"]
 
 
 @pytest.mark.asyncio
@@ -965,10 +984,10 @@ def _classified_reading() -> ClassifiedReading:
     )
 
 
-def _doc_hit() -> DocSearchHit:
+def _doc_hit(document_id: str = "DOC-03") -> DocSearchHit:
     return DocSearchHit(
-        chunk_id="DOC-03-C1",
-        document_id="DOC-03",
+        chunk_id=f"{document_id}-C1",
+        document_id=document_id,
         section="Mechanical seal inspection",
         page="1",
         topic="seal inspection",
@@ -989,9 +1008,9 @@ def _state_with_document_evidence() -> GraphState:
     return state
 
 
-def _asset() -> AssetRecord:
+def _asset(asset_id: str = "PUMP-103") -> AssetRecord:
     return AssetRecord(
-        asset_id="PUMP-103",
+        asset_id=asset_id,
         asset_type="centrifugal_pump",
         model="CP-200",
         location="Line 3",
