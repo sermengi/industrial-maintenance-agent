@@ -118,8 +118,7 @@ async def test_task_6_second_unchanged_ingest_skips_embedding_calls() -> None:
     assert result.pruned_chunks == 0
     assert client.calls == []
     assert all(
-        "UPDATE rag_chunks SET" in execution["statement"]
-        for execution in session.executions[1:]
+        "UPDATE rag_chunks SET" in execution["statement"] for execution in session.executions[1:]
     )
 
 

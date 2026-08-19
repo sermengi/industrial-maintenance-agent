@@ -231,9 +231,7 @@ async def request_interpretation_node(
 ) -> dict[str, object]:
     max_retry_attempts = max_retry_attempts or get_settings().max_retry_attempts
     retry_delay_seconds = (
-        get_settings().retry_delay_seconds
-        if retry_delay_seconds is None
-        else retry_delay_seconds
+        get_settings().retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
     )
     if state.get("asset_id_hint"):
         try:
@@ -259,9 +257,7 @@ async def request_interpretation_node(
             return {"errors": _terminal_structured_error_records(exc)}
         except RetryExhaustedError as exc:
             return {"errors": _terminal_retry_error_records(exc)}
-        classification_update: dict[str, object] = {
-            "intent": classification_result.value.intent
-        }
+        classification_update: dict[str, object] = {"intent": classification_result.value.intent}
         if classification_result.attempts:
             classification_update["errors"] = classification_result.attempts
         return classification_update
@@ -314,9 +310,7 @@ async def asset_resolution_node(
 ) -> dict[str, object]:
     max_retry_attempts = max_retry_attempts or get_settings().max_retry_attempts
     retry_delay_seconds = (
-        get_settings().retry_delay_seconds
-        if retry_delay_seconds is None
-        else retry_delay_seconds
+        get_settings().retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
     )
     identifier = state.get("asset_id_hint") or ""
     try:
@@ -382,9 +376,7 @@ async def evidence_gathering_node(
 ) -> dict[str, object]:
     max_retry_attempts = max_retry_attempts or get_settings().max_retry_attempts
     retry_delay_seconds = (
-        get_settings().retry_delay_seconds
-        if retry_delay_seconds is None
-        else retry_delay_seconds
+        get_settings().retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
     )
     offered_tool_names = TOOLS_BY_INTENT[state["intent"] or "troubleshooting"]
     try:
@@ -484,9 +476,7 @@ async def synthesis_node(
 ) -> dict[str, object]:
     max_retry_attempts = max_retry_attempts or get_settings().max_retry_attempts
     retry_delay_seconds = (
-        get_settings().retry_delay_seconds
-        if retry_delay_seconds is None
-        else retry_delay_seconds
+        get_settings().retry_delay_seconds if retry_delay_seconds is None else retry_delay_seconds
     )
     try:
         result = await generate_structured(
@@ -635,10 +625,7 @@ def _response_answer(state: GraphState, status: AgentStatus) -> str | None:
 def _unknown_asset_answer(state: GraphState) -> str:
     identifier = _attempted_asset_identifier(state)
     if identifier:
-        return (
-            f"I couldn't find an asset matching '{identifier}'. "
-            "Please provide a valid asset ID."
-        )
+        return f"I couldn't find an asset matching '{identifier}'. Please provide a valid asset ID."
     return "I couldn't find a matching asset. Please provide a valid asset ID."
 
 
@@ -779,9 +766,7 @@ def _synthesis_citation_validator(
                 f"Valid evidence IDs: {_format_valid_evidence_ids(valid_ids)}"
             )
         invalid_ids = [
-            evidence_id
-            for evidence_id in output.evidence_used
-            if evidence_id not in valid_ids
+            evidence_id for evidence_id in output.evidence_used if evidence_id not in valid_ids
         ]
         if invalid_ids:
             raise ValueError(
@@ -815,9 +800,7 @@ def _single_structured_tool_call(response: LLMResponse, tool_name: str) -> Any:
         )
     tool_call = response.tool_calls[0]
     if tool_call.name != tool_name:
-        raise ValueError(
-            f"Expected structured tool call named {tool_name}, got {tool_call.name}."
-        )
+        raise ValueError(f"Expected structured tool call named {tool_name}, got {tool_call.name}.")
     return tool_call
 
 

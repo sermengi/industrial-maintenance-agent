@@ -139,15 +139,11 @@ def build_llm_tools(
         tool_name
         for tool_name in tool_names
         if tool_name not in bindings
-        or (
-            bindings[tool_name].llm_description is None
-            and not bindings[tool_name].consequential
-        )
+        or (bindings[tool_name].llm_description is None and not bindings[tool_name].consequential)
     }
     if disallowed_tool_names:
         raise ValueError(
-            "These tools are not LLM-offered: "
-            + ", ".join(sorted(disallowed_tool_names))
+            "These tools are not LLM-offered: " + ", ".join(sorted(disallowed_tool_names))
         )
 
     return [

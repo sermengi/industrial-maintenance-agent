@@ -28,15 +28,15 @@ from maintenance_agent.orchestration.tool_bindings import (
     build_llm_tools,
     invoke_tool_binding,
 )
-from maintenance_agent.tools.submit_work_order import (
-    ConsequentialActionGuardError,
-    submit_work_order,
-)
 from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+from maintenance_agent.tools.submit_work_order import (
+    ConsequentialActionGuardError,
+    submit_work_order,
+)
 
 
 def test_all_seven_canonical_tool_names_are_declared() -> None:
@@ -75,9 +75,7 @@ def test_resolve_asset_and_submit_work_order_are_not_llm_offered() -> None:
 
 def test_only_submit_work_order_binding_is_consequential() -> None:
     consequential_bindings = [
-        tool_name
-        for tool_name, binding in TOOL_BINDINGS.items()
-        if binding.consequential
+        tool_name for tool_name, binding in TOOL_BINDINGS.items() if binding.consequential
     ]
 
     assert consequential_bindings == ["submit_work_order"]

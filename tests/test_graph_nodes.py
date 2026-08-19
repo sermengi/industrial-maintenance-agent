@@ -119,8 +119,7 @@ async def test_unknown_asset_routes_to_terminal_without_evidence_or_synthesis(
     assert final_state["response"].asset_id is None
     assert final_state["response"].error is None
     assert final_state["response"].answer == (
-        "I couldn't find an asset matching 'PUMP-999'. "
-        "Please provide a valid asset ID."
+        "I couldn't find an asset matching 'PUMP-999'. Please provide a valid asset ID."
     )
     assert final_state["response"].confidence is None
     assert final_state["tool_calls"][-1].args["identifier"] == "PUMP-999"
@@ -144,9 +143,7 @@ def test_unknown_asset_branch_has_no_edge_to_evidence_or_synthesis() -> None:
     assert (SYNTHESIS_NODE, True) not in {
         (edge.target, edge.conditional) for edge in asset_resolution_edges
     }
-    assert {
-        (edge.target, edge.conditional) for edge in asset_resolution_edges
-    } == {
+    assert {(edge.target, edge.conditional) for edge in asset_resolution_edges} == {
         ("terminal_response", True),
         (EVIDENCE_GATHERING_NODE, True),
     }
@@ -578,9 +575,7 @@ async def test_resolve_asset_retry_exhaustion_is_error_not_unknown_asset(
     monkeypatch.setattr(graph_module, "invoke_tool_binding", failing_resolve_asset)
     graph = build_agent_graph(
         AgentGraphDependencies(
-            llm_client=_RecordingLLMClient(
-                [_interpret_response("troubleshooting", "PUMP-103")]
-            ),
+            llm_client=_RecordingLLMClient([_interpret_response("troubleshooting", "PUMP-103")]),
             max_retry_attempts=2,
             retry_delay_seconds=0.5,
             sleep=fake_sleep,
