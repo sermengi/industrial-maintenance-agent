@@ -20,6 +20,8 @@ class Settings(BaseSettings):
         default="claude-sonnet-4-20250514",
         validation_alias="ANTHROPIC_MODEL",
     )
+    max_retry_attempts: int = Field(default=3, ge=1, validation_alias="MAX_RETRY_ATTEMPTS")
+    retry_delay_seconds: float = Field(default=0.5, ge=0, validation_alias="RETRY_DELAY_SECONDS")
 
     model_config = SettingsConfigDict(
         env_file=".env",

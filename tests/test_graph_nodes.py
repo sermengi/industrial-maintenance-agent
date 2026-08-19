@@ -23,11 +23,13 @@ from maintenance_agent.orchestration.graph import (
     MAX_EVIDENCE_GATHERING_ITERATIONS,
     SYNTHESIS_NODE,
     AgentGraphDependencies,
+    asset_resolution_node,
     build_agent_graph,
     evidence_gathering_node,
     request_interpretation_node,
     synthesis_node,
 )
+from maintenance_agent.orchestration.retry import RetryExhaustedError
 from maintenance_agent.orchestration.state import GraphState
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
@@ -195,7 +197,9 @@ async def test_invalid_interpretation_structured_output_routes_to_terminal_error
             )
         ]
     )
-    compiled_graph = build_agent_graph(AgentGraphDependencies(llm_client=llm_client))
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(llm_client=llm_client, max_retry_attempts=1)
+    )
 
     final_state = await compiled_graph.ainvoke(_state())
 
@@ -226,11 +230,170 @@ async def test_invalid_synthesis_structured_output_returns_recoverable_error() -
         ]
     )
 
-    update = await synthesis_node(_state(intent="troubleshooting", asset=_asset()), llm_client)
+    update = await synthesis_node(
+        _state(intent="troubleshooting", asset=_asset()),
+        llm_client,
+        max_retry_attempts=1,
+    )
 
     assert update["errors"][0].code == "structured_output_invalid"
     assert update["errors"][0].recoverable is True
     assert update["errors"][0].node == "synthesis"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_retries_transient_failures_and_merges_attempt_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    async def flaky_invoke_tool_binding(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        nonlocal call_count
+        del args, state, session
+        call_count += 1
+        assert tool_name == "get_asset_status"
+        if call_count < 3:
+            raise RuntimeError(f"temporary tool failure {call_count}")
+        return GetAssetStatusResult(
+            asset=_asset(),
+            telemetry=None,
+            classified_readings=[_classified_reading()],
+        )
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", flaky_invoke_tool_binding)
+    update = await evidence_gathering_node(
+        _state(intent="troubleshooting", asset=_asset()),
+        _RecordingLLMClient(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="status-1",
+                            name="get_asset_status",
+                            input={},
+                        )
+                    ]
+                )
+            ]
+        ),
+        cast(AsyncSession, object()),
+        max_retry_attempts=3,
+        retry_delay_seconds=0.5,
+        sleep=fake_sleep,
+    )
+
+    assert call_count == 3
+    assert sleep_calls == [0.5, 0.5]
+    assert [error.code for error in update["errors"]] == [
+        "tool_execution_failed",
+        "tool_execution_failed",
+    ]
+    assert all(error.recoverable is True for error in update["errors"])
+    assert update["tool_calls"][0].tool_name == "get_asset_status"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_exhaustion_raises_after_configured_attempt_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = 0
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    async def failing_invoke_tool_binding(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        nonlocal call_count
+        del tool_name, args, state, session
+        call_count += 1
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", failing_invoke_tool_binding)
+
+    with pytest.raises(RetryExhaustedError) as exc_info:
+        await asset_resolution_node(
+            _state(asset_id_hint="PUMP-103"),
+            cast(AsyncSession, object()),
+            max_retry_attempts=3,
+            retry_delay_seconds=0.5,
+            sleep=fake_sleep,
+        )
+
+    assert call_count == 3
+    assert len(exc_info.value.attempts) == 3
+    assert all(error.code == "tool_execution_failed" for error in exc_info.value.attempts)
+
+
+@pytest.mark.asyncio
+async def test_structured_output_retry_adds_corrective_validation_message() -> None:
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="synthesis-1",
+                        name="synthesize_response",
+                        input={
+                            "answer": "Inspect the asset.",
+                            "confidence": 0.8,
+                            "evidence_used": ["DOC-03"],
+                        },
+                    )
+                ]
+            ),
+            _synthesis_response(),
+        ]
+    )
+
+    update = await synthesis_node(
+        _state(intent="troubleshooting", asset=_asset()),
+        llm_client,
+        max_retry_attempts=2,
+        retry_delay_seconds=0.5,
+        sleep=fake_sleep,
+    )
+
+    assert update["synthesis_answer"] == "Inspect the bearing and follow the maintenance procedure."
+    assert len(update["errors"]) == 1
+    assert update["errors"][0].code == "structured_output_invalid"
+    assert sleep_calls == [0.5]
+    assert "Validation error:" in llm_client.messages_by_call[1][-1].content
+    assert "confidence" in llm_client.messages_by_call[1][-1].content
+
+
+def test_retry_settings_are_loaded_by_agent_graph_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maintenance_agent.core.config import get_settings
+
+    with monkeypatch.context() as scoped_monkeypatch:
+        get_settings.cache_clear()
+        scoped_monkeypatch.setenv("MAX_RETRY_ATTEMPTS", "4")
+        scoped_monkeypatch.setenv("RETRY_DELAY_SECONDS", "0.25")
+        dependencies = AgentGraphDependencies(llm_client=_RecordingLLMClient([]))
+        get_settings.cache_clear()
+
+    get_settings.cache_clear()
+    assert dependencies.max_retry_attempts == 4
+    assert dependencies.retry_delay_seconds == 0.25
 
 
 def test_terminal_node_is_only_agent_query_response_constructor() -> None:
