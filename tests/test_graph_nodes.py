@@ -27,6 +27,7 @@ from maintenance_agent.orchestration.graph import (
     evidence_gathering_node,
     request_interpretation_node,
     synthesis_node,
+    terminal_response_node,
 )
 from maintenance_agent.orchestration.retry import RetryExhaustedError, with_retry
 from maintenance_agent.orchestration.state import GraphState
@@ -238,6 +239,108 @@ async def test_invalid_synthesis_structured_output_returns_recoverable_error() -
     assert update["errors"][0].code == "structured_output_invalid"
     assert update["errors"][0].recoverable is False
     assert update["errors"][0].node == "synthesis"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_retries_nonexistent_evidence_citation() -> None:
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="synthesis-1",
+                        name="synthesize_response",
+                        input={
+                            "answer": "Inspect the asset.",
+                            "confidence": "hypothesis",
+                            "evidence_used": ["FE-999"],
+                        },
+                    )
+                ]
+            ),
+            _synthesis_response(),
+        ]
+    )
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["document_evidence"] = [_doc_hit()]
+
+    update = await synthesis_node(
+        state,
+        llm_client,
+        max_retry_attempts=2,
+        retry_delay_seconds=0.5,
+        sleep=fake_sleep,
+    )
+
+    assert update["synthesis_answer"] == "Inspect the bearing and follow the maintenance procedure."
+    assert update["errors"][0].code == "structured_output_invalid"
+    assert sleep_calls == [0.5]
+    retry_message = llm_client.messages_by_call[1][-1].content
+    assert "FE-999" in retry_message
+    assert "DOC-03" in retry_message
+
+
+@pytest.mark.asyncio
+async def test_synthesis_rejects_empty_evidence_used_when_evidence_exists() -> None:
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="synthesis-1",
+                        name="synthesize_response",
+                        input={
+                            "answer": "Inspect the asset.",
+                            "confidence": "hypothesis",
+                            "evidence_used": [],
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["document_evidence"] = [_doc_hit()]
+
+    update = await synthesis_node(state, llm_client, max_retry_attempts=1)
+
+    assert update["errors"][0].code == "structured_output_invalid"
+    assert update["errors"][0].recoverable is False
+    assert "at least one citation" in update["errors"][0].message
+
+
+@pytest.mark.asyncio
+async def test_synthesis_accepts_valid_evidence_citation_without_retry() -> None:
+    llm_client = _RecordingLLMClient([_synthesis_response()])
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["document_evidence"] = [_doc_hit()]
+
+    update = await synthesis_node(state, llm_client, max_retry_attempts=2)
+
+    assert update["synthesis_evidence_used"] == ["DOC-03"]
+    assert "errors" not in update
+    assert len(llm_client.messages_by_call) == 1
+
+
+def test_terminal_response_surfaces_structured_evidence_provenance() -> None:
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["asset_resolution_status"] = "resolved"
+    state["structured_evidence"] = [_classified_reading()]
+    state["synthesis_answer"] = "Inspect the bearing."
+    state["synthesis_confidence"] = "hypothesis"
+    state["synthesis_evidence_used"] = ["TS-001"]
+
+    response = terminal_response_node(state)["response"]
+
+    assert response.status == "ok"
+    assert response.structured_evidence[0].source_type == "telemetry_snapshot"
+    assert response.structured_evidence[0].source_id == "TS-001"
+    assert response.structured_evidence[0].reference_id == "TS-001"
 
 
 @pytest.mark.asyncio
@@ -522,7 +625,7 @@ async def test_structured_output_retry_adds_corrective_validation_message() -> N
     )
 
     update = await synthesis_node(
-        _state(intent="troubleshooting", asset=_asset()),
+        _state_with_document_evidence(),
         llm_client,
         max_retry_attempts=2,
         retry_delay_seconds=0.5,
@@ -857,6 +960,7 @@ def _synthesis_response() -> LLMResponse:
 
 def _classified_reading() -> ClassifiedReading:
     return ClassifiedReading(
+        source_id="TS-001",
         metric="bearing_temperature_c",
         value=Decimal("84.2"),
         unit="C",
@@ -882,6 +986,12 @@ def _doc_hit() -> DocSearchHit:
         evidence_text="Inspect the seal and bearing assembly.",
         similarity_score=0.9,
     )
+
+
+def _state_with_document_evidence() -> GraphState:
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["document_evidence"] = [_doc_hit()]
+    return state
 
 
 def _asset() -> AssetRecord:

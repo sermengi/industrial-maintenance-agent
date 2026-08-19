@@ -495,6 +495,7 @@ async def synthesis_node(
             SynthesisOutput,
             SYNTHESIZE_RESPONSE_TOOL_NAME,
             node=SYNTHESIS_NODE,
+            extra_validator=_synthesis_citation_validator(state),
             max_attempts=max_retry_attempts,
             delay_seconds=retry_delay_seconds,
             sleep=sleep,
@@ -766,6 +767,46 @@ def _structured_retry_message(validation_error: str) -> LLMMessage:
     )
 
 
+def _synthesis_citation_validator(
+    state: GraphState,
+) -> Callable[[SynthesisOutput], None]:
+    valid_ids = _valid_evidence_ids(state)
+
+    def validate(output: SynthesisOutput) -> None:
+        if not output.evidence_used:
+            raise ValueError(
+                "evidence_used must contain at least one citation. "
+                f"Valid evidence IDs: {_format_valid_evidence_ids(valid_ids)}"
+            )
+        invalid_ids = [
+            evidence_id
+            for evidence_id in output.evidence_used
+            if evidence_id not in valid_ids
+        ]
+        if invalid_ids:
+            raise ValueError(
+                "evidence_used contains invalid citation(s): "
+                f"{', '.join(invalid_ids)}. "
+                f"Valid evidence IDs: {_format_valid_evidence_ids(valid_ids)}"
+            )
+
+    return validate
+
+
+def _valid_evidence_ids(state: GraphState) -> set[str]:
+    structured_ids = {
+        source_id
+        for item in state.get("structured_evidence", [])
+        if (source_id := _source_id(item)) is not None
+    }
+    document_ids = {hit.document_id for hit in state.get("document_evidence", [])}
+    return structured_ids | document_ids
+
+
+def _format_valid_evidence_ids(valid_ids: set[str]) -> str:
+    return ", ".join(sorted(valid_ids)) if valid_ids else "none"
+
+
 def _single_structured_tool_call(response: LLMResponse, tool_name: str) -> Any:
     if len(response.tool_calls) != 1:
         raise ValueError(
@@ -830,6 +871,8 @@ def _response_structured_evidence(state: GraphState) -> list[StructuredEvidence]
     return [
         StructuredEvidence(
             source=item.__class__.__name__,
+            source_type=_source_type(item),
+            source_id=_source_id(item),
             summary=str(item),
             reference_id=_reference_id(item),
         )
@@ -837,7 +880,20 @@ def _response_structured_evidence(state: GraphState) -> list[StructuredEvidence]
     ]
 
 
+def _source_type(item: object) -> str | None:
+    value = getattr(item, "source_type", None)
+    return str(value) if value is not None else None
+
+
+def _source_id(item: object) -> str | None:
+    value = getattr(item, "source_id", None)
+    return str(value) if value is not None else None
+
+
 def _reference_id(item: object) -> str | None:
+    source_id = _source_id(item)
+    if source_id is not None:
+        return source_id
     for field_name in (
         "event_id",
         "fault_code",

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,8 @@ RECURRENCE_THRESHOLD = 3
 class FaultRecurrence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    source_type: Literal["fault_event"] = "fault_event"
+    source_id: str
     fault_code: str
     total_occurrences: int
     occurrences_within_window: int
@@ -72,6 +75,7 @@ async def _compute_recurrence(
         )
         recurrence.append(
             FaultRecurrence(
+                source_id=max(events_for_code, key=lambda event: event.timestamp).event_id,
                 fault_code=fault_code,
                 total_occurrences=len(events_for_code),
                 occurrences_within_window=occurrences_within_window,

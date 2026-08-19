@@ -23,6 +23,8 @@ class AgentQueryRequest(BaseModel):
 
 class StructuredEvidence(BaseModel):
     source: str
+    source_type: str | None = None
+    source_id: str | None = None
     summary: str
     reference_id: str | None = None
 

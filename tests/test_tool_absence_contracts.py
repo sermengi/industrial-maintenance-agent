@@ -152,6 +152,7 @@ async def test_expected_business_absence_returns_typed_results_without_raising(
 
 def test_missing_metric_classification_uses_nullable_fields_not_normal_default() -> None:
     reading = ClassifiedReading(
+        source_id="TS-001",
         metric="inlet_pressure_bar",
         value="2.40",
         unit="bar",

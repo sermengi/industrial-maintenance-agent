@@ -24,6 +24,8 @@ TelemetryTier = Literal["normal", "warning", "critical"]
 class ClassifiedReading(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    source_type: Literal["telemetry_snapshot"] = "telemetry_snapshot"
+    source_id: str
     metric: str
     value: Decimal
     unit: str
@@ -87,6 +89,7 @@ def _classify_telemetry(
         _classify_reading(
             metric=metric,
             value=getattr(telemetry_snapshot, metric),
+            source_id=telemetry_snapshot.snapshot_id,
             limit=limits_by_metric.get(metric),
         )
         for metric in METRIC_UNITS
@@ -96,10 +99,12 @@ def _classify_telemetry(
 def _classify_reading(
     metric: str,
     value: Decimal,
+    source_id: str,
     limit: OperatingLimitRecord | None,
 ) -> ClassifiedReading:
     if limit is None:
         return ClassifiedReading(
+            source_id=source_id,
             metric=metric,
             value=value,
             unit=METRIC_UNITS[metric],
@@ -109,6 +114,7 @@ def _classify_reading(
         )
 
     return ClassifiedReading(
+        source_id=source_id,
         metric=metric,
         value=value,
         unit=limit.unit,

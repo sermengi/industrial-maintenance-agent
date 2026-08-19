@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,6 +30,14 @@ class TelemetrySnapshotRecord(RepositoryRecord):
     discharge_pressure_bar: Decimal
     flow_rate_l_min: Decimal
 
+    @property
+    def source_type(self) -> Literal["telemetry_snapshot"]:
+        return "telemetry_snapshot"
+
+    @property
+    def source_id(self) -> str:
+        return self.snapshot_id
+
 
 class FaultEventRecord(RepositoryRecord):
     event_id: str
@@ -39,6 +48,14 @@ class FaultEventRecord(RepositoryRecord):
     severity: str
     status: str
 
+    @property
+    def source_type(self) -> Literal["fault_event"]:
+        return "fault_event"
+
+    @property
+    def source_id(self) -> str:
+        return self.event_id
+
 
 class MaintenanceEventRecord(RepositoryRecord):
     maintenance_id: str
@@ -47,6 +64,14 @@ class MaintenanceEventRecord(RepositoryRecord):
     type: str
     component: str
     description: str
+
+    @property
+    def source_type(self) -> Literal["maintenance_event"]:
+        return "maintenance_event"
+
+    @property
+    def source_id(self) -> str:
+        return self.maintenance_id
 
 
 class ObservationRecord(RepositoryRecord):
@@ -58,6 +83,14 @@ class ObservationRecord(RepositoryRecord):
     description: str
     reported_by: str
 
+    @property
+    def source_type(self) -> Literal["observation"]:
+        return "observation"
+
+    @property
+    def source_id(self) -> str:
+        return self.observation_id
+
 
 class WorkOrderRecord(RepositoryRecord):
     work_order_id: str
@@ -67,6 +100,14 @@ class WorkOrderRecord(RepositoryRecord):
     status: str
     created_at: date
     approved: bool
+
+    @property
+    def source_type(self) -> Literal["work_order"]:
+        return "work_order"
+
+    @property
+    def source_id(self) -> str:
+        return self.work_order_id
 
 
 class FaultTaxonomyRecord(RepositoryRecord):
@@ -89,6 +130,10 @@ class OperatingLimitRecord(RepositoryRecord):
     rule_text: str
     source_type: str
     provenance_note: str
+
+    @property
+    def source_id(self) -> str:
+        return self.operating_limit_id
 
 
 class PlantPolicyRecord(RepositoryRecord):

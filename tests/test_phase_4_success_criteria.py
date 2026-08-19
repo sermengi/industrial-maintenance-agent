@@ -201,7 +201,12 @@ async def test_non_hitl_golden_scenarios_run_through_agent_query_api(
             *(
                 []
                 if expected_status == "unknown_asset"
-                else [LLMResponse(tool_calls=[]), _synthesis_response()]
+                else [
+                    LLMResponse(tool_calls=[]),
+                    _synthesis_response(
+                        "DOC-03" if "search_maintenance_docs" in evidence_tools else "TS-001"
+                    ),
+                ]
             ),
         ]
     )
@@ -317,7 +322,7 @@ def _evidence_response(tool_name: str) -> LLMResponse:
     )
 
 
-def _synthesis_response() -> LLMResponse:
+def _synthesis_response(evidence_id: str = "DOC-03") -> LLMResponse:
     return LLMResponse(
         tool_calls=[
             ToolCallRequest(
@@ -326,7 +331,7 @@ def _synthesis_response() -> LLMResponse:
                 input={
                     "answer": "Use the gathered evidence to inspect the asset.",
                     "confidence": "hypothesis",
-                    "evidence_used": ["DOC-03"],
+                    "evidence_used": [evidence_id],
                 },
             )
         ]
@@ -335,6 +340,7 @@ def _synthesis_response() -> LLMResponse:
 
 def _classified_reading() -> ClassifiedReading:
     return ClassifiedReading(
+        source_id="TS-001",
         metric="bearing_temperature_c",
         value=Decimal("78.0"),
         unit="C",

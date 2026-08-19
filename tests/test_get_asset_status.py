@@ -434,6 +434,7 @@ def _all_inlet_pressure_readings_are_unclassified(*results: GetAssetStatusResult
     return all(
         _readings_by_metric(result)["inlet_pressure_bar"]
         == ClassifiedReading(
+            source_id=cast(TelemetrySnapshotRecord, result.telemetry).snapshot_id,
             metric="inlet_pressure_bar",
             value=cast(TelemetrySnapshotRecord, result.telemetry).inlet_pressure_bar,
             unit="bar",
