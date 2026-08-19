@@ -91,4 +91,5 @@ class GraphState(TypedDict):
     last_evidence_tool_call_count: NotRequired[int]
     synthesis_answer: NotRequired[str | None]
     synthesis_confidence: NotRequired[Confidence | None]
+    synthesis_evidence_used: NotRequired[list[str]]
     response: AgentQueryResponse | None

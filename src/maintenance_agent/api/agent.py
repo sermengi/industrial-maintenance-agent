@@ -85,5 +85,6 @@ def _initial_state(
         last_evidence_tool_call_count=0,
         synthesis_answer=None,
         synthesis_confidence=None,
+        synthesis_evidence_used=[],
         response=None,
     )

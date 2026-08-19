@@ -23,6 +23,7 @@ from maintenance_agent.orchestration.graph import (
     build_agent_graph,
     evidence_gathering_node,
     request_interpretation_node,
+    synthesis_node,
 )
 from maintenance_agent.orchestration.state import GraphState
 from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
@@ -139,6 +140,59 @@ async def test_interpretation_with_asset_hint_uses_classification_only_schema() 
     assert llm_client.tool_names_by_call == [["classify_request"]]
     assert "asset_identifier" not in llm_client.schemas_by_call[0]["classify_request"]["properties"]
     assert "extract the asset identifier" not in llm_client.messages_by_call[0][0].content
+
+
+@pytest.mark.asyncio
+async def test_invalid_interpretation_structured_output_routes_to_terminal_error() -> None:
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="interpret-1",
+                        name="interpret_request",
+                        input={"intent": "unsupported", "asset_identifier": "PUMP-103"},
+                    )
+                ]
+            )
+        ]
+    )
+    compiled_graph = build_agent_graph(AgentGraphDependencies(llm_client=llm_client))
+
+    final_state = await compiled_graph.ainvoke(_state())
+
+    assert final_state["response"].status == "error"
+    assert final_state["response"].error.code == "structured_output_invalid"
+    assert final_state["errors"][-1].recoverable is True
+    assert final_state["errors"][-1].node == "request_interpretation"
+    assert final_state["tool_calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_synthesis_structured_output_returns_recoverable_error() -> None:
+    llm_client = _RecordingLLMClient(
+        [
+            LLMResponse(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="synthesis-1",
+                        name="synthesize_response",
+                        input={
+                            "answer": "Inspect the asset.",
+                            "confidence": 0.8,
+                            "evidence_used": [],
+                        },
+                    )
+                ]
+            )
+        ]
+    )
+
+    update = await synthesis_node(_state(intent="troubleshooting", asset=_asset()), llm_client)
+
+    assert update["errors"][0].code == "structured_output_invalid"
+    assert update["errors"][0].recoverable is True
+    assert update["errors"][0].node == "synthesis"
 
 
 def test_terminal_node_is_only_agent_query_response_constructor() -> None:
@@ -312,6 +366,7 @@ def _synthesis_response() -> LLMResponse:
                 input={
                     "answer": "Inspect the bearing and follow the maintenance procedure.",
                     "confidence": "confirmed",
+                    "evidence_used": ["DOC-03"],
                 },
             )
         ]
@@ -357,6 +412,7 @@ def _state(
             "last_evidence_tool_call_count": 0,
             "synthesis_answer": None,
             "synthesis_confidence": None,
+            "synthesis_evidence_used": [],
             "response": None,
         },
     )

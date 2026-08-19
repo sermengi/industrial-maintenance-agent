@@ -310,6 +310,7 @@ def _synthesis_response() -> LLMResponse:
                 input={
                     "answer": "Use the gathered evidence to inspect the asset.",
                     "confidence": "hypothesis",
+                    "evidence_used": ["DOC-03"],
                 },
             )
         ]
@@ -336,6 +337,7 @@ def _state(query: str) -> GraphState:
         last_evidence_tool_call_count=0,
         synthesis_answer=None,
         synthesis_confidence=None,
+        synthesis_evidence_used=[],
         response=None,
     )
 

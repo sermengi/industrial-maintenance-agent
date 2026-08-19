@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.llm.client import (
@@ -16,6 +17,7 @@ from maintenance_agent.llm.client import (
     LLMToolChoice,
 )
 from maintenance_agent.orchestration.state import (
+    ErrorRecord,
     GraphState,
     Intent,
     StructuredEvidenceItem,
@@ -46,6 +48,7 @@ EVIDENCE_GATHERING_NODE = "evidence_gathering"
 SYNTHESIS_NODE = "synthesis"
 TERMINAL_RESPONSE_NODE = "terminal_response"
 
+PostInterpretationRoute = Literal["asset_resolution", "terminal"]
 InterpretationRoute = Literal["terminal", "evidence_gathering"]
 EvidenceGatheringRoute = Literal["evidence_gathering", "synthesis", "terminal"]
 
@@ -86,7 +89,15 @@ TOOLS_BY_INTENT: dict[Intent, tuple[LLMOfferedToolName, ...]] = {
 }
 
 
-class RequestInterpretation(BaseModel):
+class StructuredOutputValidationError(Exception):
+    def __init__(self, code: str, message: str, node: str | None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.node = node
+
+
+class IntentExtractionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     intent: Intent
@@ -103,7 +114,8 @@ class SynthesisOutput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     answer: str
-    confidence: Confidence
+    confidence: Confidence | None = None
+    evidence_used: list[str]
 
 
 @dataclass(frozen=True)
@@ -139,7 +151,14 @@ def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
     graph.add_node(TERMINAL_RESPONSE_NODE, terminal)
 
     graph.add_edge(START, REQUEST_INTERPRETATION_NODE)
-    graph.add_edge(REQUEST_INTERPRETATION_NODE, ASSET_RESOLUTION_NODE)
+    graph.add_conditional_edges(
+        REQUEST_INTERPRETATION_NODE,
+        route_after_request_interpretation,
+        {
+            "asset_resolution": ASSET_RESOLUTION_NODE,
+            "terminal": TERMINAL_RESPONSE_NODE,
+        },
+    )
     graph.add_conditional_edges(
         ASSET_RESOLUTION_NODE,
         route_after_asset_resolution,
@@ -167,40 +186,54 @@ async def request_interpretation_node(
     llm_client: LLMClient,
 ) -> dict[str, object]:
     if state.get("asset_id_hint"):
-        response = await llm_client.generate(
+        try:
+            intent_only = await generate_structured(
+                llm_client,
+                [
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "Classify this maintenance request into exactly one supported "
+                            f"intent.\n\nRequest: {state['query']}"
+                        ),
+                    )
+                ],
+                RequestIntentOnly,
+                CLASSIFY_REQUEST_TOOL_NAME,
+                node=REQUEST_INTERPRETATION_NODE,
+            )
+        except StructuredOutputValidationError as exc:
+            return {"errors": [_error_record(exc)]}
+        return {"intent": intent_only.intent}
+
+    try:
+        interpretation = await generate_structured(
+            llm_client,
             [
                 LLMMessage(
                     role="user",
                     content=(
-                        "Classify this maintenance request into exactly one supported "
-                        f"intent.\n\nRequest: {state['query']}"
+                        "Classify this maintenance request and extract the asset identifier "
+                        f"if one is present.\n\nRequest: {state['query']}"
                     ),
-                )
-            ],
-            tools=[_structured_tool(CLASSIFY_REQUEST_TOOL_NAME, RequestIntentOnly)],
-            tool_choice=LLMToolChoice(type="tool", name=CLASSIFY_REQUEST_TOOL_NAME),
-        )
-        intent_only = _first_tool_input(response, RequestIntentOnly)
-        return {"intent": intent_only.intent}
-
-    response = await llm_client.generate(
-        [
-            LLMMessage(
-                role="user",
-                content=(
-                    "Classify this maintenance request and extract the asset identifier "
-                    f"if one is present.\n\nRequest: {state['query']}"
                 ),
-            )
-        ],
-        tools=[_structured_tool(INTERPRET_REQUEST_TOOL_NAME, RequestInterpretation)],
-        tool_choice=LLMToolChoice(type="tool", name=INTERPRET_REQUEST_TOOL_NAME),
-    )
-    interpretation = _first_tool_input(response, RequestInterpretation)
+            ],
+            IntentExtractionOutput,
+            INTERPRET_REQUEST_TOOL_NAME,
+            node=REQUEST_INTERPRETATION_NODE,
+        )
+    except StructuredOutputValidationError as exc:
+        return {"errors": [_error_record(exc)]}
     return {
         "intent": interpretation.intent,
         "asset_id_hint": interpretation.asset_identifier,
     }
+
+
+async def route_after_request_interpretation(state: GraphState) -> PostInterpretationRoute:
+    if state.get("errors"):
+        return "terminal"
+    return "asset_resolution"
 
 
 async def asset_resolution_node(
@@ -304,15 +337,20 @@ async def synthesis_node(
     state: GraphState,
     llm_client: LLMClient,
 ) -> dict[str, object]:
-    response = await llm_client.generate(
-        [_synthesis_message(state)],
-        tools=[_structured_tool(SYNTHESIZE_RESPONSE_TOOL_NAME, SynthesisOutput)],
-        tool_choice=LLMToolChoice(type="tool", name=SYNTHESIZE_RESPONSE_TOOL_NAME),
-    )
-    synthesis = _first_tool_input(response, SynthesisOutput)
+    try:
+        synthesis = await generate_structured(
+            llm_client,
+            [_synthesis_message(state)],
+            SynthesisOutput,
+            SYNTHESIZE_RESPONSE_TOOL_NAME,
+            node=SYNTHESIS_NODE,
+        )
+    except StructuredOutputValidationError as exc:
+        return {"errors": [_error_record(exc)]}
     return {
         "synthesis_answer": synthesis.answer,
         "synthesis_confidence": synthesis.confidence,
+        "synthesis_evidence_used": synthesis.evidence_used,
     }
 
 
@@ -368,10 +406,62 @@ def _structured_tool(name: str, model: type[BaseModel]) -> LLMTool:
     )
 
 
-def _first_tool_input(response: LLMResponse, model: type[BaseModel]) -> Any:
-    if not response.tool_calls:
-        raise ValueError("Expected a structured tool response from the LLM.")
-    return model.model_validate(response.tool_calls[0].input)
+async def generate_structured[StructuredOutputT: BaseModel](
+    client: LLMClient,
+    messages: Sequence[LLMMessage],
+    output_model: type[StructuredOutputT],
+    tool_name: str,
+    *,
+    node: str | None = None,
+    extra_validator: Callable[[StructuredOutputT], None] | None = None,
+) -> StructuredOutputT:
+    response = await client.generate(
+        messages,
+        tools=[_structured_tool(tool_name, output_model)],
+        tool_choice=LLMToolChoice(type="tool", name=tool_name),
+    )
+    try:
+        tool_call = _single_structured_tool_call(response, tool_name)
+        output = output_model.model_validate(tool_call.input)
+    except (ValidationError, ValueError) as exc:
+        raise StructuredOutputValidationError(
+            code="structured_output_invalid",
+            message=str(exc),
+            node=node,
+        ) from exc
+    if extra_validator is not None:
+        try:
+            extra_validator(output)
+        except Exception as exc:
+            raise StructuredOutputValidationError(
+                code="structured_output_invalid",
+                message=str(exc),
+                node=node,
+            ) from exc
+    return output
+
+
+def _single_structured_tool_call(response: LLMResponse, tool_name: str) -> Any:
+    if len(response.tool_calls) != 1:
+        raise ValueError(
+            f"Expected exactly one structured tool call named {tool_name}, "
+            f"got {len(response.tool_calls)}."
+        )
+    tool_call = response.tool_calls[0]
+    if tool_call.name != tool_name:
+        raise ValueError(
+            f"Expected structured tool call named {tool_name}, got {tool_call.name}."
+        )
+    return tool_call
+
+
+def _error_record(error: StructuredOutputValidationError) -> ErrorRecord:
+    return ErrorRecord(
+        code=error.code,
+        message=error.message,
+        node=error.node,
+        recoverable=True,
+    )
 
 
 def _evidence_message(state: GraphState) -> LLMMessage:
