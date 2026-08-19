@@ -1,15 +1,21 @@
+from contextlib import asynccontextmanager
 from datetime import date
 from typing import cast
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from maintenance_agent.api import agent as agent_api
+from maintenance_agent.api.agent import router as agent_router
 from maintenance_agent.db.repositories.records import AssetRecord
 from maintenance_agent.orchestration.state import GraphState
 from maintenance_agent.orchestration.tool_bindings import (
     CANONICAL_TOOL_NAMES,
     LLM_OFFERED_TOOL_NAMES,
+    TOOL_BINDINGS,
     TOOL_INPUT_MODELS,
     CreateWorkOrderDraftInput,
     GetAssetStatusInput,
@@ -18,8 +24,13 @@ from maintenance_agent.orchestration.tool_bindings import (
     ResolveAssetInput,
     SearchMaintenanceDocsInput,
     SubmitWorkOrderInput,
+    ToolBinding,
     build_llm_tools,
     invoke_tool_binding,
+)
+from maintenance_agent.tools.submit_work_order import (
+    ConsequentialActionGuardError,
+    submit_work_order,
 )
 from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
@@ -62,12 +73,42 @@ def test_resolve_asset_and_submit_work_order_are_not_llm_offered() -> None:
     assert "submit_work_order" not in llm_tool_names
 
 
+def test_only_submit_work_order_binding_is_consequential() -> None:
+    consequential_bindings = [
+        tool_name
+        for tool_name, binding in TOOL_BINDINGS.items()
+        if binding.consequential
+    ]
+
+    assert consequential_bindings == ["submit_work_order"]
+
+
+def test_consequential_bindings_are_filtered_from_llm_tools() -> None:
+    bindings = {
+        **TOOL_BINDINGS,
+        "get_asset_status": ToolBinding(
+            GetAssetStatusInput,
+            llm_description="Misconfigured consequential status tool.",
+            consequential=True,
+        ),
+    }
+
+    llm_tool_names = [
+        tool.name
+        for tool in build_llm_tools(
+            ["get_asset_status", "search_maintenance_docs"],
+            bindings=bindings,
+        )
+    ]
+
+    assert llm_tool_names == ["search_maintenance_docs"]
+
+
 def test_disallowed_tool_names_cannot_be_built_as_llm_tools() -> None:
     with pytest.raises(ValueError, match="resolve_asset"):
         build_llm_tools(["resolve_asset"])
 
-    with pytest.raises(ValueError, match="submit_work_order"):
-        build_llm_tools(["submit_work_order"])
+    assert build_llm_tools(["submit_work_order"]) == []
 
 
 def test_llm_tool_schemas_are_generated_from_dedicated_input_models() -> None:
@@ -224,13 +265,68 @@ async def test_phase_six_tools_are_reserved_not_executed_via_current_bindings() 
             session,
         )
 
-    with pytest.raises(NotImplementedError, match="Phase 6"):
+    with pytest.raises(ConsequentialActionGuardError):
         await invoke_tool_binding(
             "submit_work_order",
             {"draft_id": "DRAFT-001"},
             _state(_asset()),
             session,
         )
+
+
+@pytest.mark.asyncio
+async def test_submit_work_order_guard_requires_approved_status() -> None:
+    with pytest.raises(ConsequentialActionGuardError, match="approval_status='approved'"):
+        await submit_work_order(
+            "DRAFT-001",
+            approval_status="pending_approval",
+            session=cast(AsyncSession, object()),
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_work_order_draft_does_not_use_consequential_guard() -> None:
+    with pytest.raises(NotImplementedError, match="create_work_order_draft"):
+        await invoke_tool_binding(
+            "create_work_order_draft",
+            {"issue": "Recurring bearing overheating", "priority": "high"},
+            _state(_asset()),
+            cast(AsyncSession, object()),
+        )
+
+
+@pytest.mark.asyncio
+async def test_consequential_guard_error_reaches_api_unhandled_exception_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GuardFailingGraph:
+        async def ainvoke(self, state: GraphState) -> GraphState:
+            del state
+            raise ConsequentialActionGuardError("approval guard tripped")
+
+    @asynccontextmanager
+    async def fake_request_session() -> object:
+        yield cast(AsyncSession, object())
+
+    monkeypatch.setattr(agent_api, "_request_session", fake_request_session)
+    app = FastAPI()
+    app.state.agent_graph = GuardFailingGraph()
+    app.include_router(agent_router, prefix="/agent")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/agent/query",
+            json={"query": "Submit the work order.", "asset_id": "PUMP-103"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "unhandled_exception"
+    assert payload["error"]["code"] != "tool_execution_failed"
 
 
 def _asset() -> AssetRecord:
@@ -252,5 +348,6 @@ def _state(asset: AssetRecord | None = None) -> GraphState:
             "asset_id_hint": None,
             "fault_code_hint": None,
             "asset": asset,
+            "approval_status": "none",
         },
     )

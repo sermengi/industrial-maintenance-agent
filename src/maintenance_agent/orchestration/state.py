@@ -23,6 +23,7 @@ from maintenance_agent.tools.search_maintenance_docs import (
     DocSearchHit,
     SearchMaintenanceDocsResult,
 )
+from maintenance_agent.tools.submit_work_order import SubmitWorkOrderResult
 
 Intent = Literal[
     "troubleshooting",
@@ -40,6 +41,7 @@ ToolResult = (
     | GetMaintenanceHistoryResult
     | SearchMaintenanceDocsResult
     | GetPlantPolicyResult
+    | SubmitWorkOrderResult
 )
 StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence
 

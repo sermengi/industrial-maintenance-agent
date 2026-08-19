@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
@@ -14,6 +15,7 @@ from maintenance_agent.tools.get_maintenance_history import get_maintenance_hist
 from maintenance_agent.tools.get_plant_policy import get_plant_policy
 from maintenance_agent.tools.resolve_asset import resolve_asset
 from maintenance_agent.tools.search_maintenance_docs import search_maintenance_docs
+from maintenance_agent.tools.submit_work_order import submit_work_order
 
 CanonicalToolName = Literal[
     "resolve_asset",
@@ -84,28 +86,64 @@ class SubmitWorkOrderInput(ToolInputModel):
     draft_id: str
 
 
+@dataclass(frozen=True)
+class ToolBinding:
+    input_model: type[ToolInputModel]
+    llm_description: str | None = None
+    consequential: bool = False
+
+
+TOOL_BINDINGS: dict[CanonicalToolName, ToolBinding] = {
+    "resolve_asset": ToolBinding(ResolveAssetInput),
+    "get_asset_status": ToolBinding(
+        GetAssetStatusInput,
+        llm_description="Fetch current telemetry, active faults, observations, and limits.",
+    ),
+    "get_maintenance_history": ToolBinding(
+        GetMaintenanceHistoryInput,
+        llm_description="Fetch maintenance, fault, work-order, and recurrence history.",
+    ),
+    "search_maintenance_docs": ToolBinding(
+        SearchMaintenanceDocsInput,
+        llm_description="Search maintenance documentation for relevant procedures.",
+    ),
+    "get_plant_policy": ToolBinding(
+        GetPlantPolicyInput,
+        llm_description="Fetch plant policy records by policy type.",
+    ),
+    "create_work_order_draft": ToolBinding(
+        CreateWorkOrderDraftInput,
+        llm_description="Create a non-submitted work-order draft for approval.",
+    ),
+    "submit_work_order": ToolBinding(
+        SubmitWorkOrderInput,
+        consequential=True,
+    ),
+}
 TOOL_INPUT_MODELS: dict[CanonicalToolName, type[ToolInputModel]] = {
-    "resolve_asset": ResolveAssetInput,
-    "get_asset_status": GetAssetStatusInput,
-    "get_maintenance_history": GetMaintenanceHistoryInput,
-    "search_maintenance_docs": SearchMaintenanceDocsInput,
-    "get_plant_policy": GetPlantPolicyInput,
-    "create_work_order_draft": CreateWorkOrderDraftInput,
-    "submit_work_order": SubmitWorkOrderInput,
+    tool_name: binding.input_model for tool_name, binding in TOOL_BINDINGS.items()
 }
 TOOL_DESCRIPTIONS: dict[LLMOfferedToolName, str] = {
-    "get_asset_status": "Fetch current telemetry, active faults, observations, and limits.",
-    "get_maintenance_history": "Fetch maintenance, fault, work-order, and recurrence history.",
-    "search_maintenance_docs": "Search maintenance documentation for relevant procedures.",
-    "get_plant_policy": "Fetch plant policy records by policy type.",
-    "create_work_order_draft": "Create a non-submitted work-order draft for approval.",
+    cast(LLMOfferedToolName, tool_name): cast(str, binding.llm_description)
+    for tool_name, binding in TOOL_BINDINGS.items()
+    if binding.llm_description is not None and not binding.consequential
 }
 
 
 def build_llm_tools(
     tool_names: Sequence[CanonicalToolName] = LLM_OFFERED_TOOL_NAMES,
+    *,
+    bindings: Mapping[CanonicalToolName, ToolBinding] = TOOL_BINDINGS,
 ) -> list[LLMTool]:
-    disallowed_tool_names = set(tool_names) - set(LLM_OFFERED_TOOL_NAMES)
+    disallowed_tool_names = {
+        tool_name
+        for tool_name in tool_names
+        if tool_name not in bindings
+        or (
+            bindings[tool_name].llm_description is None
+            and not bindings[tool_name].consequential
+        )
+    }
     if disallowed_tool_names:
         raise ValueError(
             "These tools are not LLM-offered: "
@@ -115,10 +153,11 @@ def build_llm_tools(
     return [
         LLMTool(
             name=tool_name,
-            description=TOOL_DESCRIPTIONS[cast(LLMOfferedToolName, tool_name)],
-            input_schema=TOOL_INPUT_MODELS[tool_name].model_json_schema(),
+            description=cast(str, bindings[tool_name].llm_description),
+            input_schema=bindings[tool_name].input_model.model_json_schema(),
         )
         for tool_name in tool_names
+        if not bindings[tool_name].consequential
     ]
 
 
@@ -152,8 +191,12 @@ async def invoke_tool_binding(
         CreateWorkOrderDraftInput.model_validate(args)
         raise NotImplementedError("create_work_order_draft is reserved for Phase 6.")
 
-    SubmitWorkOrderInput.model_validate(args)
-    raise NotImplementedError("submit_work_order is reserved for the Phase 6 resume path.")
+    submit_input = SubmitWorkOrderInput.model_validate(args)
+    return await submit_work_order(
+        submit_input.draft_id,
+        approval_status=state.get("approval_status", "none"),
+        session=session,
+    )
 
 
 def _require_asset(state: GraphState, tool_name: str) -> AssetRecord:
