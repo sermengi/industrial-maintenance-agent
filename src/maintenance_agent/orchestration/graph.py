@@ -256,7 +256,9 @@ async def request_interpretation_node(
                 sleep=sleep,
             )
         except StructuredOutputValidationError as exc:
-            return {"errors": exc.attempts}
+            return {"errors": _terminal_structured_error_records(exc)}
+        except RetryExhaustedError as exc:
+            return {"errors": _terminal_retry_error_records(exc)}
         classification_update: dict[str, object] = {
             "intent": classification_result.value.intent
         }
@@ -284,7 +286,9 @@ async def request_interpretation_node(
             sleep=sleep,
         )
     except StructuredOutputValidationError as exc:
-        return {"errors": exc.attempts}
+        return {"errors": _terminal_structured_error_records(exc)}
+    except RetryExhaustedError as exc:
+        return {"errors": _terminal_retry_error_records(exc)}
     interpretation_update: dict[str, object] = {
         "intent": interpretation_result.value.intent,
         "asset_id_hint": interpretation_result.value.asset_identifier,
@@ -295,7 +299,7 @@ async def request_interpretation_node(
 
 
 async def route_after_request_interpretation(state: GraphState) -> PostInterpretationRoute:
-    if state.get("intent") is None:
+    if _has_terminal_error(state) or state.get("intent") is None:
         return "terminal"
     return "asset_resolution"
 
@@ -315,16 +319,19 @@ async def asset_resolution_node(
         else retry_delay_seconds
     )
     identifier = state.get("asset_id_hint") or ""
-    retry_result = await with_retry(
-        lambda: invoke_tool_binding(
-            "resolve_asset", {"identifier": identifier}, state, session
-        ),
-        max_attempts=max_retry_attempts,
-        delay_seconds=retry_delay_seconds,
-        sleep=sleep,
-        error_code="tool_execution_failed",
-        node=ASSET_RESOLUTION_NODE,
-    )
+    try:
+        retry_result = await with_retry(
+            lambda: invoke_tool_binding(
+                "resolve_asset", {"identifier": identifier}, state, session
+            ),
+            max_attempts=max_retry_attempts,
+            delay_seconds=retry_delay_seconds,
+            sleep=sleep,
+            error_code="tool_execution_failed",
+            node=ASSET_RESOLUTION_NODE,
+        )
+    except RetryExhaustedError as exc:
+        return {"errors": _terminal_retry_error_records(exc)}
     result = cast(ResolveAssetResult, retry_result.value)
     update: dict[str, object] = {
         "asset": result.asset,
@@ -339,12 +346,16 @@ async def asset_resolution_node(
 
 
 async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute:
+    if _has_terminal_error(state):
+        return "terminal"
     if state.get("asset_resolution_status") == "not_found":
         return "terminal"
     return "evidence_gathering"
 
 
 async def route_after_evidence_gathering(state: GraphState) -> EvidenceGatheringRoute:
+    if _has_terminal_error(state):
+        return "terminal"
     if state.get("approval_status") == "pending_approval":
         return "terminal"
     loop_complete = (
@@ -376,18 +387,21 @@ async def evidence_gathering_node(
         else retry_delay_seconds
     )
     offered_tool_names = TOOLS_BY_INTENT[state["intent"] or "troubleshooting"]
-    llm_result = await with_retry(
-        lambda: llm_client.generate(
-            [_evidence_message(state)],
-            tools=build_llm_tools(offered_tool_names),
-            tool_choice=LLMToolChoice(type="auto"),
-        ),
-        max_attempts=max_retry_attempts,
-        delay_seconds=retry_delay_seconds,
-        sleep=sleep,
-        error_code="llm_call_failed",
-        node=EVIDENCE_GATHERING_NODE,
-    )
+    try:
+        llm_result = await with_retry(
+            lambda: llm_client.generate(
+                [_evidence_message(state)],
+                tools=build_llm_tools(offered_tool_names),
+                tool_choice=LLMToolChoice(type="auto"),
+            ),
+            max_attempts=max_retry_attempts,
+            delay_seconds=retry_delay_seconds,
+            sleep=sleep,
+            error_code="llm_call_failed",
+            node=EVIDENCE_GATHERING_NODE,
+        )
+    except RetryExhaustedError as exc:
+        return {"errors": _terminal_retry_error_records(exc)}
     response = llm_result.value
 
     tool_call_records: list[ToolCallRecord] = []
@@ -417,14 +431,17 @@ async def evidence_gathering_node(
                 session,
             )
 
-        tool_result = await with_retry(
-            invoke_requested_tool,
-            max_attempts=max_retry_attempts,
-            delay_seconds=retry_delay_seconds,
-            sleep=sleep,
-            error_code="tool_execution_failed",
-            node=EVIDENCE_GATHERING_NODE,
-        )
+        try:
+            tool_result = await with_retry(
+                invoke_requested_tool,
+                max_attempts=max_retry_attempts,
+                delay_seconds=retry_delay_seconds,
+                sleep=sleep,
+                error_code="tool_execution_failed",
+                node=EVIDENCE_GATHERING_NODE,
+            )
+        except RetryExhaustedError as exc:
+            return {"errors": [*errors, *_terminal_retry_error_records(exc)]}
         errors.extend(tool_result.attempts)
         result = tool_result.value
         tool_call_records.append(
@@ -483,7 +500,9 @@ async def synthesis_node(
             sleep=sleep,
         )
     except StructuredOutputValidationError as exc:
-        return {"errors": exc.attempts}
+        return {"errors": _terminal_structured_error_records(exc)}
+    except RetryExhaustedError as exc:
+        return {"errors": _terminal_retry_error_records(exc)}
     update: dict[str, object] = {
         "synthesis_answer": result.value.answer,
         "synthesis_confidence": result.value.confidence,
@@ -495,7 +514,7 @@ async def synthesis_node(
 
 
 def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
-    error = state.get("errors", [])[-1] if state.get("errors") else None
+    error = _terminal_error(state)
     status = _terminal_status(state)
     response = AgentQueryResponse(
         request_id=state.get("request_id", DEFAULT_REQUEST_ID),
@@ -505,7 +524,7 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
         confidence=None
         if status in {"unknown_asset", "insufficient_evidence", "error"}
         else state.get("synthesis_confidence"),
-        structured_evidence=_response_structured_evidence(state),
+        structured_evidence=[] if status == "error" else _response_structured_evidence(state),
         document_evidence=[
             DocumentEvidence(
                 document_id=hit.document_id,
@@ -513,9 +532,11 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
                 excerpt=hit.evidence_text,
             )
             for hit in state.get("document_evidence", [])
-        ],
+        ]
+        if status != "error"
+        else [],
         pending_action=None,
-        error=AgentError(code=error.code, message=error.message)
+        error=AgentError(code=error.code, message=_public_error_message(error.code))
         if status == "error" and error is not None
         else None,
     )
@@ -523,15 +544,70 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
 
 
 def _terminal_status(state: GraphState) -> AgentStatus:
+    if _has_terminal_error(state):
+        return "error"
     if state.get("asset_resolution_status") == "not_found":
         return "unknown_asset"
     if state.get("approval_status") == "pending_approval":
         return "needs_approval"
     if _has_insufficient_evidence(state):
         return "insufficient_evidence"
-    if state.get("errors") and state.get("synthesis_answer") is None:
-        return "error"
     return "ok"
+
+
+def _terminal_error(state: GraphState) -> ErrorRecord | None:
+    for error in reversed(state.get("errors", [])):
+        if not error.recoverable:
+            return error
+    return None
+
+
+def _has_terminal_error(state: GraphState) -> bool:
+    return _terminal_error(state) is not None
+
+
+def _terminal_retry_error_records(error: RetryExhaustedError) -> list[ErrorRecord]:
+    if not error.attempts:
+        return [
+            ErrorRecord(
+                code="tool_execution_failed",
+                message=error.message,
+                node=None,
+                recoverable=False,
+            )
+        ]
+    return [
+        *error.attempts[:-1],
+        error.attempts[-1].model_copy(update={"recoverable": False}),
+    ]
+
+
+def _terminal_structured_error_records(
+    error: StructuredOutputValidationError,
+) -> list[ErrorRecord]:
+    if not error.attempts:
+        return [
+            ErrorRecord(
+                code=error.code,
+                message=error.message,
+                node=error.node,
+                recoverable=False,
+            )
+        ]
+    return [
+        *error.attempts[:-1],
+        error.attempts[-1].model_copy(update={"recoverable": False}),
+    ]
+
+
+def _public_error_message(error_code: str) -> str:
+    if error_code == "tool_execution_failed":
+        return "A tool call failed after multiple attempts. Please try again shortly."
+    if error_code == "llm_call_failed":
+        return "The AI service is temporarily unavailable. Please try again shortly."
+    if error_code == "structured_output_invalid":
+        return "The AI response could not be validated. Please try again shortly."
+    return "The request failed after multiple attempts. Please try again shortly."
 
 
 def _response_asset_id(state: GraphState, status: AgentStatus) -> str | None:
@@ -540,6 +616,8 @@ def _response_asset_id(state: GraphState, status: AgentStatus) -> str | None:
     asset = state.get("asset")
     if asset is not None:
         return asset.asset_id
+    if status == "error":
+        return None
     return state.get("asset_id_hint")
 
 

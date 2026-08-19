@@ -23,13 +23,12 @@ from maintenance_agent.orchestration.graph import (
     MAX_EVIDENCE_GATHERING_ITERATIONS,
     SYNTHESIS_NODE,
     AgentGraphDependencies,
-    asset_resolution_node,
     build_agent_graph,
     evidence_gathering_node,
     request_interpretation_node,
     synthesis_node,
 )
-from maintenance_agent.orchestration.retry import RetryExhaustedError
+from maintenance_agent.orchestration.retry import RetryExhaustedError, with_retry
 from maintenance_agent.orchestration.state import GraphState
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
@@ -205,7 +204,7 @@ async def test_invalid_interpretation_structured_output_routes_to_terminal_error
 
     assert final_state["response"].status == "error"
     assert final_state["response"].error.code == "structured_output_invalid"
-    assert final_state["errors"][-1].recoverable is True
+    assert final_state["errors"][-1].recoverable is False
     assert final_state["errors"][-1].node == "request_interpretation"
     assert final_state["tool_calls"] == []
 
@@ -237,7 +236,7 @@ async def test_invalid_synthesis_structured_output_returns_recoverable_error() -
     )
 
     assert update["errors"][0].code == "structured_output_invalid"
-    assert update["errors"][0].recoverable is True
+    assert update["errors"][0].recoverable is False
     assert update["errors"][0].node == "synthesis"
 
 
@@ -302,39 +301,198 @@ async def test_tool_call_retries_transient_failures_and_merges_attempt_errors(
 
 
 @pytest.mark.asyncio
-async def test_tool_call_exhaustion_raises_after_configured_attempt_count(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_retry_helper_exhaustion_raises_after_configured_attempt_count() -> None:
     call_count = 0
 
     async def fake_sleep(delay: float) -> None:
         del delay
 
-    async def failing_invoke_tool_binding(
-        tool_name: str,
-        args: dict[str, object],
-        state: GraphState,
-        session: AsyncSession,
-    ) -> object:
+    async def failing_call() -> object:
         nonlocal call_count
-        del tool_name, args, state, session
         call_count += 1
         raise RuntimeError("database unavailable")
 
-    monkeypatch.setattr(graph_module, "invoke_tool_binding", failing_invoke_tool_binding)
-
     with pytest.raises(RetryExhaustedError) as exc_info:
-        await asset_resolution_node(
-            _state(asset_id_hint="PUMP-103"),
-            cast(AsyncSession, object()),
-            max_retry_attempts=3,
-            retry_delay_seconds=0.5,
+        await with_retry(
+            failing_call,
+            max_attempts=3,
+            delay_seconds=0.5,
             sleep=fake_sleep,
+            error_code="tool_execution_failed",
+            node=ASSET_RESOLUTION_NODE,
         )
 
     assert call_count == 3
     assert len(exc_info.value.attempts) == 3
     assert all(error.code == "tool_execution_failed" for error in exc_info.value.attempts)
+
+
+@pytest.mark.asyncio
+async def test_evidence_tool_retry_exhaustion_hard_aborts_with_sanitized_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_calls: list[str] = []
+    raw_marker = "RAW_TOOL_FAILURE_MARKER"
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    async def failing_second_tool(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        del args, state, session
+        tool_calls.append(tool_name)
+        if tool_name == "resolve_asset":
+            return ResolveAssetResult(status="resolved", asset=_asset())
+        if tool_name == "get_asset_status":
+            return GetAssetStatusResult(
+                asset=_asset(),
+                telemetry=None,
+                classified_readings=[_classified_reading()],
+            )
+        if tool_name == "search_maintenance_docs":
+            raise RuntimeError(raw_marker)
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", failing_second_tool)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("troubleshooting", "PUMP-103"),
+                    LLMResponse(
+                        tool_calls=[
+                            ToolCallRequest(
+                                id="status-1",
+                                name="get_asset_status",
+                                input={},
+                            )
+                        ]
+                    ),
+                    LLMResponse(
+                        tool_calls=[
+                            ToolCallRequest(
+                                id="search-1",
+                                name="search_maintenance_docs",
+                                input={"query": "bearing overheating"},
+                            )
+                        ]
+                    ),
+                ]
+            ),
+            max_retry_attempts=2,
+            retry_delay_seconds=0.5,
+            sleep=fake_sleep,
+        )
+    )
+
+    final_state = await graph.ainvoke(_state())
+
+    assert final_state["response"].status == "error"
+    assert final_state["response"].asset_id == "PUMP-103"
+    assert final_state["response"].confidence is None
+    assert final_state["response"].structured_evidence == []
+    assert final_state["response"].document_evidence == []
+    assert final_state["response"].error.code == "tool_execution_failed"
+    assert final_state["response"].error.message == (
+        "A tool call failed after multiple attempts. Please try again shortly."
+    )
+    assert raw_marker not in final_state["response"].error.message
+    assert raw_marker in final_state["errors"][-1].message
+    assert final_state["errors"][-1].recoverable is False
+    assert len(final_state["structured_evidence"]) == 1
+    assert [record.tool_name for record in final_state["tool_calls"]] == [
+        "resolve_asset",
+        "get_asset_status",
+    ]
+    assert tool_calls == [
+        "resolve_asset",
+        "get_asset_status",
+        "search_maintenance_docs",
+        "search_maintenance_docs",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evidence_llm_retry_exhaustion_hard_aborts_with_sanitized_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_marker = "RAW_LLM_FAILURE_MARKER"
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    llm_client = _FailingLLMClient(
+        [_interpret_response("troubleshooting", "PUMP-103")],
+        raw_marker,
+    )
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=llm_client,
+            max_retry_attempts=2,
+            retry_delay_seconds=0.5,
+            sleep=fake_sleep,
+        )
+    )
+
+    final_state = await graph.ainvoke(_state())
+
+    assert final_state["response"].status == "error"
+    assert final_state["response"].asset_id == "PUMP-103"
+    assert final_state["response"].error.code == "llm_call_failed"
+    assert final_state["response"].error.message == (
+        "The AI service is temporarily unavailable. Please try again shortly."
+    )
+    assert raw_marker not in final_state["response"].error.message
+    assert raw_marker in final_state["errors"][-1].message
+    assert final_state["errors"][-1].recoverable is False
+    assert len(llm_client.messages_by_call) == 3
+
+
+@pytest.mark.asyncio
+async def test_resolve_asset_retry_exhaustion_is_error_not_unknown_asset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_marker = "RAW_RESOLVE_DB_FAILURE"
+
+    async def fake_sleep(delay: float) -> None:
+        del delay
+
+    async def failing_resolve_asset(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        del args, state, session
+        assert tool_name == "resolve_asset"
+        raise RuntimeError(raw_marker)
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", failing_resolve_asset)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [_interpret_response("troubleshooting", "PUMP-103")]
+            ),
+            max_retry_attempts=2,
+            retry_delay_seconds=0.5,
+            sleep=fake_sleep,
+        )
+    )
+
+    final_state = await graph.ainvoke(_state())
+
+    assert final_state["response"].status == "error"
+    assert final_state["response"].asset_id is None
+    assert final_state["response"].error.code == "tool_execution_failed"
+    assert raw_marker not in final_state["response"].error.message
+    assert raw_marker in final_state["errors"][-1].message
+    assert final_state["asset_resolution_status"] is None
+    assert final_state["tool_calls"] == []
 
 
 @pytest.mark.asyncio
@@ -622,6 +780,26 @@ class _RecordingLLMClient:
         if not self._responses:
             raise AssertionError("Unexpected LLM call.")
         return self._responses.pop(0)
+
+
+class _FailingLLMClient(_RecordingLLMClient):
+    def __init__(self, responses: Sequence[LLMResponse], failure_message: str) -> None:
+        super().__init__(responses)
+        self.failure_message = failure_message
+
+    async def generate(
+        self,
+        messages: Sequence[LLMMessage],
+        *,
+        tools: Sequence[LLMTool] | None = None,
+        tool_choice: LLMToolChoice | None = None,
+    ) -> LLMResponse:
+        if self._responses:
+            return await super().generate(messages, tools=tools, tool_choice=tool_choice)
+        self.messages_by_call.append(messages)
+        self.tool_names_by_call.append([tool.name for tool in tools or []])
+        self.schemas_by_call.append({tool.name: tool.input_schema for tool in tools or []})
+        raise RuntimeError(self.failure_message)
 
 
 async def _fake_invoke_tool_binding(
