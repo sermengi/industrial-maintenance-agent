@@ -341,12 +341,21 @@ async def test_create_work_order_draft_binding_injects_state_context(
 
 
 @pytest.mark.asyncio
-async def test_submit_work_order_is_reserved_for_phase_six_resume_path() -> None:
+async def test_submit_work_order_binding_keeps_guard_on_unapproved_state() -> None:
+    draft = WorkOrderDraft(
+        draft_id="DRAFT-001",
+        asset_id="PUMP-103",
+        issue="Recurring bearing overheating",
+        recommended_action="Investigate root cause.",
+        priority="high",
+        supporting_evidence=[],
+    )
+
     with pytest.raises(ConsequentialActionGuardError):
         await invoke_tool_binding(
             "submit_work_order",
             {"draft_id": "DRAFT-001"},
-            _state(_asset()),
+            cast(GraphState, {**_state(_asset()), "work_order_draft": draft}),
             cast(AsyncSession, object()),
         )
 
@@ -355,7 +364,14 @@ async def test_submit_work_order_is_reserved_for_phase_six_resume_path() -> None
 async def test_submit_work_order_guard_requires_approved_status() -> None:
     with pytest.raises(ConsequentialActionGuardError, match="approval_status='approved'"):
         await submit_work_order(
-            "DRAFT-001",
+            WorkOrderDraft(
+                draft_id="DRAFT-001",
+                asset_id="PUMP-103",
+                issue="Recurring bearing overheating",
+                recommended_action="Investigate root cause.",
+                priority="high",
+                supporting_evidence=[],
+            ),
             approval_status="pending_approval",
             session=cast(AsyncSession, object()),
         )

@@ -7,7 +7,7 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord
+from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord, WorkOrderRecord
 from maintenance_agent.schemas.agent import AgentQueryResponse, Confidence
 from maintenance_agent.tools.get_asset_status import (
     ClassifiedReading,
@@ -21,7 +21,6 @@ from maintenance_agent.tools.search_maintenance_docs import (
     DocSearchHit,
     SearchMaintenanceDocsResult,
 )
-from maintenance_agent.tools.submit_work_order import SubmitWorkOrderResult
 
 Intent = Literal[
     "troubleshooting",
@@ -54,7 +53,7 @@ ToolResult = (
     | SearchMaintenanceDocsResult
     | GetPlantPolicyResult
     | WorkOrderDraft
-    | SubmitWorkOrderResult
+    | WorkOrderRecord
 )
 
 

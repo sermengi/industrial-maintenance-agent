@@ -110,6 +110,18 @@ def test_phase_1_models_define_expected_checks_and_indexes() -> None:
     }
 
 
+def test_work_order_status_check_accepts_completed_and_submitted_only() -> None:
+    work_orders = Base.metadata.tables["work_orders"]
+    status_checks = [
+        str(constraint.sqltext)
+        for constraint in work_orders.constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name == "ck_work_orders_status"
+    ]
+
+    assert status_checks == ["status IN ('completed', 'submitted')"]
+
+
 def test_task_4_rag_chunks_schema_uses_typed_metadata_columns_and_vector() -> None:
     rag_chunks = Base.metadata.tables["rag_chunks"]
 

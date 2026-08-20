@@ -9,13 +9,15 @@ def test_alembic_revision_chain_includes_phase_3_rag_revision() -> None:
     revisions = list(script.walk_revisions())
 
     assert [revision.revision for revision in revisions] == [
+        "20260820_0004",
         "20260817_0003",
         "20260817_0002",
         "20260815_0001",
     ]
-    assert revisions[0].down_revision == "20260817_0002"
-    assert revisions[1].down_revision == "20260815_0001"
-    assert revisions[2].down_revision is None
+    assert revisions[0].down_revision == "20260817_0003"
+    assert revisions[1].down_revision == "20260817_0002"
+    assert revisions[2].down_revision == "20260815_0001"
+    assert revisions[3].down_revision is None
 
 
 def test_phase_1_initial_revision_creates_locked_tables_and_timestamptz_columns() -> None:
@@ -61,6 +63,18 @@ def test_task_6_rag_migration_adds_content_hash_for_dedup() -> None:
     assert 'op.add_column("rag_chunks", sa.Column("content_hash"' in migration_source
     assert "sha256(text::bytea)" in migration_source
     assert 'op.alter_column("rag_chunks", "content_hash", nullable=False)' in migration_source
+
+
+def test_phase_6_work_order_status_migration_adds_submitted_status() -> None:
+    migration_source = Path(
+        "migrations/versions/20260820_0004_widen_work_order_status.py"
+    ).read_text()
+
+    assert 'op.drop_constraint("ck_work_orders_status", "work_orders", type_="check")' in (
+        migration_source
+    )
+    assert "status IN ('completed', 'submitted')" in migration_source
+    assert "status IN ('completed')" in migration_source
 
 
 def test_phase_1_test_database_configuration_is_documented_and_provisioned() -> None:

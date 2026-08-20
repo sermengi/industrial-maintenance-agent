@@ -1,6 +1,6 @@
 import os
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from inspect import signature
 
@@ -24,7 +24,7 @@ from maintenance_agent.db.repositories import (
     telemetry,
     work_orders,
 )
-from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord
+from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord, WorkOrderRecord
 
 
 async def dump_queryable_repository_records(
@@ -100,7 +100,7 @@ def test_repository_modules_expose_locked_function_surface() -> None:
         },
         maintenance_events: {"list_for_asset"},
         observations: {"list_for_asset"},
-        work_orders: {"list_for_asset"},
+        work_orders: {"create_submitted", "list_for_asset"},
         fault_taxonomy: {"get_by_code", "list_all"},
         operating_limits: {"list_for_model"},
         plant_policies: {"get_by_id", "list_by_type"},
@@ -118,6 +118,20 @@ def test_repository_modules_expose_locked_function_surface() -> None:
             first_parameter = next(iter(parameters.values()))
             assert first_parameter.name == "session"
             assert first_parameter.annotation is AsyncSession
+
+
+@pytest.mark.asyncio
+async def test_work_order_next_id_uses_max_numeric_suffix() -> None:
+    class ScalarResult:
+        def scalars(self) -> list[str]:
+            return ["WO-001", "WO-010", "IGNORED", "WO-002"]
+
+    class Session:
+        async def execute(self, statement: object) -> ScalarResult:
+            del statement
+            return ScalarResult()
+
+    assert await work_orders._next_work_order_id(Session()) == "WO-011"  # noqa: SLF001
 
 
 @pytest.fixture(scope="module")
@@ -255,6 +269,34 @@ async def test_reference_repositories_return_expected_rows(session: AsyncSession
     assert policy is not None
     assert policy.type == "consequential_action"
     assert [order.work_order_id for order in pump_103_work_orders] == ["WO-002"]
+
+
+@pytest.mark.asyncio
+async def test_work_order_repository_creates_next_submitted_work_order(
+    session: AsyncSession,
+) -> None:
+    record = await work_orders.create_submitted(
+        session,
+        asset_id="PUMP-103",
+        issue="Recurring bearing overheating",
+        priority="high",
+        created_at=date(2026, 8, 20),
+    )
+    await session.commit()
+
+    persisted = await work_orders.list_for_asset(session, "PUMP-103")
+
+    assert record == WorkOrderRecord(
+        work_order_id="WO-003",
+        asset_id="PUMP-103",
+        issue="Recurring bearing overheating",
+        priority="high",
+        status="submitted",
+        created_at=date(2026, 8, 20),
+        approved=True,
+    )
+    assert [order.work_order_id for order in persisted] == ["WO-002", "WO-003"]
+    assert persisted[-1] == record
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ class WorkOrder(Base):
     __tablename__ = "work_orders"
     __table_args__ = (
         CheckConstraint("priority IN ('low', 'high')", name="ck_work_orders_priority"),
-        CheckConstraint("status IN ('completed')", name="ck_work_orders_status"),
+        CheckConstraint("status IN ('completed', 'submitted')", name="ck_work_orders_status"),
         Index("ix_work_orders_asset_id_created_at", "asset_id", "created_at"),
     )
 

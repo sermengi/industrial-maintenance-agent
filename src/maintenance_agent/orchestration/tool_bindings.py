@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.db.repositories.records import AssetRecord
 from maintenance_agent.llm.client import LLMTool
-from maintenance_agent.orchestration.state import GraphState, ToolResult
+from maintenance_agent.orchestration.state import GraphState, ToolResult, WorkOrderDraft
 from maintenance_agent.tools.create_work_order_draft import create_work_order_draft
 from maintenance_agent.tools.get_asset_status import get_asset_status
 from maintenance_agent.tools.get_maintenance_history import get_maintenance_history
@@ -198,8 +198,9 @@ async def invoke_tool_binding(
         )
 
     submit_input = SubmitWorkOrderInput.model_validate(args)
+    draft = _require_work_order_draft(state, submit_input.draft_id)
     return await submit_work_order(
-        submit_input.draft_id,
+        draft,
         approval_status=state.get("approval_status", "none"),
         session=session,
     )
@@ -210,3 +211,14 @@ def _require_asset(state: GraphState, tool_name: str) -> AssetRecord:
     if asset is None:
         raise ValueError(f"{tool_name} requires a resolved asset in graph state.")
     return asset
+
+
+def _require_work_order_draft(state: GraphState, draft_id: str) -> WorkOrderDraft:
+    draft = state.get("work_order_draft")
+    if draft is None:
+        raise ValueError("submit_work_order requires a work order draft in graph state.")
+    if draft.draft_id != draft_id:
+        raise ValueError(
+            f"submit_work_order draft_id does not match pending draft {draft.draft_id}."
+        )
+    return draft
