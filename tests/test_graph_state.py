@@ -3,7 +3,11 @@ from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-from maintenance_agent.db.repositories.records import FaultEventRecord, WorkOrderRecord
+from maintenance_agent.db.repositories.records import (
+    FaultEventRecord,
+    PlantPolicyRecord,
+    WorkOrderRecord,
+)
 from maintenance_agent.orchestration.state import (
     ApprovalStatus,
     AssetResolutionStatus,
@@ -67,8 +71,21 @@ def test_structured_evidence_item_covers_synthesis_facing_sources() -> None:
         ClassifiedReading,
         FaultEventRecord,
         FaultRecurrence,
+        PlantPolicyRecord,
         WorkOrderRecord,
     }
+
+
+def test_plant_policy_record_exposes_evidence_source_identity() -> None:
+    policy = PlantPolicyRecord(
+        policy_id="PP-002",
+        type="consequential_action",
+        condition="Work-order submission changes system state",
+        required_action="Human approval is required before final submission",
+    )
+
+    assert policy.source_type == "plant_policy"
+    assert policy.source_id == "PP-002"
 
 
 def test_work_order_draft_schema_has_no_lifecycle_status_and_forbids_extras() -> None:

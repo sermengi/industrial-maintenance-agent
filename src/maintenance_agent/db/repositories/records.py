@@ -141,3 +141,11 @@ class PlantPolicyRecord(RepositoryRecord):
     type: str
     condition: str
     required_action: str
+
+    @property
+    def source_type(self) -> Literal["plant_policy"]:
+        return "plant_policy"
+
+    @property
+    def source_id(self) -> str:
+        return self.policy_id

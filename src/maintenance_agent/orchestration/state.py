@@ -7,13 +7,18 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from maintenance_agent.db.repositories.records import AssetRecord, FaultEventRecord, WorkOrderRecord
+from maintenance_agent.db.repositories.records import (
+    AssetRecord,
+    FaultEventRecord,
+    PlantPolicyRecord,
+    WorkOrderRecord,
+)
 from maintenance_agent.schemas.agent import AgentQueryResponse, Confidence
+from maintenance_agent.tools.fault_recurrence import FaultRecurrence
 from maintenance_agent.tools.get_asset_status import (
     ClassifiedReading,
     GetAssetStatusResult,
 )
-from maintenance_agent.tools.fault_recurrence import FaultRecurrence
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
@@ -32,7 +37,9 @@ Intent = Literal[
 AssetResolutionStatus = Literal["resolved", "not_found"]
 ApprovalStatus = Literal["none", "pending_approval", "approved", "rejected", "submitted"]
 
-StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence | WorkOrderRecord
+StructuredEvidenceItem = (
+    ClassifiedReading | FaultEventRecord | FaultRecurrence | PlantPolicyRecord | WorkOrderRecord
+)
 
 
 class WorkOrderDraft(BaseModel):

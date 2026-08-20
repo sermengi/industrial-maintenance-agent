@@ -53,6 +53,7 @@ from maintenance_agent.schemas.agent import (
 )
 from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
+from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
 from maintenance_agent.tools.submit_work_order import submit_work_order
@@ -477,10 +478,12 @@ async def evidence_gathering_node(
 
     for tool_call in response.tool_calls:
         if tool_call.name == "create_work_order_draft":
-            async def invoke_draft_tool() -> ToolResult:
+            async def invoke_draft_tool(
+                requested_tool_call: ToolCallRequest = tool_call,
+            ) -> ToolResult:
                 return await invoke_tool_binding(
                     "create_work_order_draft",
-                    tool_call.input,
+                    requested_tool_call.input,
                     state,
                     session,
                 )
@@ -555,6 +558,8 @@ async def evidence_gathering_node(
         elif isinstance(result, GetMaintenanceHistoryResult):
             structured_evidence.extend(result.fault_events)
             structured_evidence.extend(result.recurrence)
+        elif isinstance(result, GetPlantPolicyResult):
+            structured_evidence.extend(result.policies)
         elif isinstance(result, SearchMaintenanceDocsResult):
             document_evidence.extend(result.results)
 

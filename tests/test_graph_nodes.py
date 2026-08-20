@@ -10,7 +10,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from maintenance_agent.db.repositories.records import AssetRecord, WorkOrderRecord
+from maintenance_agent.db.repositories.records import (
+    AssetRecord,
+    PlantPolicyRecord,
+    WorkOrderRecord,
+)
 from maintenance_agent.llm.client import (
     LLMMessage,
     LLMResponse,
@@ -25,8 +29,8 @@ from maintenance_agent.orchestration.graph import (
     MAX_EVIDENCE_GATHERING_ITERATIONS,
     SYNTHESIS_NODE,
     AgentGraphDependencies,
-    build_response,
     build_agent_graph,
+    build_response,
     evidence_gathering_node,
     request_interpretation_node,
     synthesis_node,
@@ -36,6 +40,7 @@ from maintenance_agent.orchestration.retry import RetryExhaustedError, with_retr
 from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
+from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 from maintenance_agent.tools.search_maintenance_docs import (
     DocSearchHit,
@@ -355,6 +360,23 @@ def test_terminal_response_surfaces_structured_evidence_provenance() -> None:
     assert response.structured_evidence[0].reference_id == "TS-001"
 
 
+def test_terminal_response_surfaces_plant_policy_provenance() -> None:
+    state = _state(intent="troubleshooting", asset=_asset())
+    state["asset_resolution_status"] = "resolved"
+    state["structured_evidence"] = [_plant_policy("PP-001", "recurring_fault")]
+    state["synthesis_answer"] = "Escalate recurring bearing faults."
+    state["synthesis_confidence"] = "confirmed"
+    state["synthesis_evidence_used"] = ["PP-001"]
+
+    response = terminal_response_node(state)["response"]
+
+    assert response.status == "ok"
+    assert response.evidence_used == ["PP-001"]
+    assert response.structured_evidence[0].source_type == "plant_policy"
+    assert response.structured_evidence[0].source_id == "PP-001"
+    assert response.structured_evidence[0].reference_id == "PP-001"
+
+
 def test_terminal_response_exposes_cited_subset_without_filtering_retrieved_evidence() -> None:
     state = _state(intent="procedure_lookup", asset=_asset(asset_id="PUMP-104"))
     state["asset_resolution_status"] = "resolved"
@@ -371,6 +393,45 @@ def test_terminal_response_exposes_cited_subset_without_filtering_retrieved_evid
     assert response.status == "ok"
     assert response.evidence_used == ["DOC-01"]
     assert [hit.document_id for hit in response.document_evidence] == ["DOC-01", "DOC-02"]
+
+
+@pytest.mark.asyncio
+async def test_evidence_gathering_extracts_plant_policy_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_invoke_tool_binding(
+        tool_name: str,
+        args: dict[str, object],
+        state: GraphState,
+        session: AsyncSession,
+    ) -> object:
+        del state, session
+        assert tool_name == "get_plant_policy"
+        return GetPlantPolicyResult(
+            policy_type=cast(str, args["policy_type"]),
+            policies=[_plant_policy("PP-002", "consequential_action")],
+        )
+
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", fake_invoke_tool_binding)
+    update = await evidence_gathering_node(
+        _state(intent="work_order_request", asset=_asset()),
+        _RecordingLLMClient(
+            [
+                LLMResponse(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="policy-1",
+                            name="get_plant_policy",
+                            input={"policy_type": "consequential_action"},
+                        )
+                    ]
+                )
+            ]
+        ),
+        cast(AsyncSession, object()),
+    )
+
+    assert update["structured_evidence"] == [_plant_policy("PP-002", "consequential_action")]
 
 
 @pytest.mark.asyncio
@@ -760,6 +821,69 @@ async def test_empty_procedure_lookup_document_evidence_routes_to_insufficient_e
 
 
 @pytest.mark.asyncio
+async def test_recurring_fault_policy_is_cross_referenceable_from_final_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("troubleshooting", "PUMP-103"),
+                    _evidence_response("get_plant_policy", policy_type="recurring_fault"),
+                    LLMResponse(tool_calls=[]),
+                    _synthesis_response("PP-001"),
+                ]
+            )
+        )
+    )
+
+    final_state = await graph.ainvoke(_state())
+
+    assert "PP-001" in [item.source_id for item in final_state["structured_evidence"]]
+    assert final_state["response"].evidence_used == ["PP-001"]
+    assert any(
+        item.source_type == "plant_policy" and item.source_id == "PP-001"
+        for item in final_state["response"].structured_evidence
+    )
+
+
+@pytest.mark.asyncio
+async def test_consequential_action_policy_is_cross_referenceable_from_final_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    _evidence_response("get_plant_policy", policy_type="consequential_action"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("policy-draft-thread")
+
+    await graph.ainvoke(_state(request_id="policy-draft-thread"), config=config)
+    response = build_response(
+        cast(GraphState, graph.get_state(config).values),
+        status="needs_approval",
+    )
+
+    policy_ids = [item.source_id for item in graph.get_state(config).values["structured_evidence"]]
+
+    assert "PP-002" in policy_ids
+    assert response.status == "needs_approval"
+    assert any(
+        item.source_type == "plant_policy" and item.source_id == "PP-002"
+        for item in response.structured_evidence
+    )
+    await graph.ainvoke(Command(resume="reject"), config=config)
+
+
+@pytest.mark.asyncio
 async def test_procedure_lookup_document_evidence_routes_to_synthesis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1099,6 +1223,13 @@ async def _fake_invoke_tool_binding(
         return GetMaintenanceHistoryResult(asset=_asset())
     if tool_name == "search_maintenance_docs":
         return SearchMaintenanceDocsResult(query="bearing overheating", results=[_doc_hit()])
+    if tool_name == "get_plant_policy":
+        policy_type = cast(str, args["policy_type"])
+        policy_id = "PP-002" if policy_type == "consequential_action" else "PP-001"
+        return GetPlantPolicyResult(
+            policy_type=policy_type,
+            policies=[_plant_policy(policy_id, policy_type)],
+        )
     if tool_name == "create_work_order_draft":
         return WorkOrderDraft(
             draft_id=state.get("request_id", "test-request"),
@@ -1126,7 +1257,23 @@ def _interpret_response(intent: str, asset_identifier: str) -> LLMResponse:
     )
 
 
-def _synthesis_response() -> LLMResponse:
+def _evidence_response(tool_name: str, *, policy_type: str = "recurring_fault") -> LLMResponse:
+    return LLMResponse(
+        tool_calls=[
+            ToolCallRequest(
+                id=f"{tool_name}-1",
+                name=tool_name,
+                input={"query": "bearing overheating"}
+                if tool_name == "search_maintenance_docs"
+                else {"policy_type": policy_type}
+                if tool_name == "get_plant_policy"
+                else {},
+            )
+        ]
+    )
+
+
+def _synthesis_response(evidence_id: str = "DOC-03") -> LLMResponse:
     return LLMResponse(
         tool_calls=[
             ToolCallRequest(
@@ -1135,7 +1282,7 @@ def _synthesis_response() -> LLMResponse:
                 input={
                     "answer": "Inspect the bearing and follow the maintenance procedure.",
                     "confidence": "confirmed",
-                    "evidence_used": ["DOC-03"],
+                    "evidence_used": [evidence_id],
                 },
             )
         ]
@@ -1163,6 +1310,28 @@ def _classified_reading() -> ClassifiedReading:
         tier="critical",
         operating_limit_id="OL-002",
         rule_text="Normal < 82; high >= 82",
+    )
+
+
+def _plant_policy(
+    policy_id: str = "PP-001",
+    policy_type: str = "recurring_fault",
+) -> PlantPolicyRecord:
+    if policy_type == "consequential_action":
+        return PlantPolicyRecord(
+            policy_id=policy_id,
+            type=policy_type,
+            condition="Work-order submission changes system state",
+            required_action="Human approval is required before final submission",
+        )
+    return PlantPolicyRecord(
+        policy_id=policy_id,
+        type=policy_type,
+        condition="Same fault occurs >=3 times within 12 months",
+        required_action=(
+            "Escalate for root-cause investigation and require human review before "
+            "consequential maintenance action"
+        ),
     )
 
 
