@@ -13,10 +13,8 @@ from maintenance_agent.tools.get_asset_status import (
     ClassifiedReading,
     GetAssetStatusResult,
 )
-from maintenance_agent.tools.get_maintenance_history import (
-    FaultRecurrence,
-    GetMaintenanceHistoryResult,
-)
+from maintenance_agent.tools.fault_recurrence import FaultRecurrence
+from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 from maintenance_agent.tools.search_maintenance_docs import (
@@ -35,15 +33,29 @@ Intent = Literal[
 AssetResolutionStatus = Literal["resolved", "not_found"]
 ApprovalStatus = Literal["none", "pending_approval", "approved", "rejected", "submitted"]
 
+StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence
+
+
+class WorkOrderDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: str
+    asset_id: str
+    issue: str
+    recommended_action: str
+    priority: Literal["low", "high"]
+    supporting_evidence: list[str] = Field(default_factory=list)
+
+
 ToolResult = (
     ResolveAssetResult
     | GetAssetStatusResult
     | GetMaintenanceHistoryResult
     | SearchMaintenanceDocsResult
     | GetPlantPolicyResult
+    | WorkOrderDraft
     | SubmitWorkOrderResult
 )
-StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence
 
 
 class ToolCallRecord(BaseModel):
@@ -54,15 +66,6 @@ class ToolCallRecord(BaseModel):
     result: ToolResult
     timestamp: datetime
     sequence: int
-
-
-class WorkOrderDraft(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    draft_id: str
-    asset_id: str
-    issue: str
-    priority: str
 
 
 class ErrorRecord(BaseModel):

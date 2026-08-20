@@ -32,6 +32,7 @@ from maintenance_agent.orchestration.state import (
     StructuredEvidenceItem,
     ToolCallRecord,
     ToolResult,
+    WorkOrderDraft,
 )
 from maintenance_agent.orchestration.tool_bindings import (
     LLMOfferedToolName,
@@ -404,7 +405,38 @@ async def evidence_gathering_node(
 
     for tool_call in response.tool_calls:
         if tool_call.name == "create_work_order_draft":
+            async def invoke_draft_tool() -> ToolResult:
+                return await invoke_tool_binding(
+                    "create_work_order_draft",
+                    tool_call.input,
+                    state,
+                    session,
+                )
+
+            try:
+                tool_result = await with_retry(
+                    invoke_draft_tool,
+                    max_attempts=max_retry_attempts,
+                    delay_seconds=retry_delay_seconds,
+                    sleep=sleep,
+                    error_code="tool_execution_failed",
+                    node=EVIDENCE_GATHERING_NODE,
+                )
+            except RetryExhaustedError as exc:
+                return {"errors": [*errors, *_terminal_retry_error_records(exc)]}
+            errors.extend(tool_result.attempts)
+            draft = cast(WorkOrderDraft, tool_result.value)
             draft_update: dict[str, object] = {
+                "tool_calls": [
+                    _tool_call_record(
+                        tool_call.name,
+                        tool_call.input,
+                        draft,
+                        state,
+                        len(tool_call_records),
+                    )
+                ],
+                "work_order_draft": draft,
                 "approval_status": "pending_approval",
                 "evidence_gathering_iterations": next_iteration,
                 "last_evidence_tool_call_count": 1,

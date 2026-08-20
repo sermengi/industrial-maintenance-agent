@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import date
-from typing import cast
+from typing import Literal, cast
 
 import httpx
 import pytest
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from maintenance_agent.api import agent as agent_api
 from maintenance_agent.api.agent import router as agent_router
 from maintenance_agent.db.repositories.records import AssetRecord
-from maintenance_agent.orchestration.state import GraphState
+from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
 from maintenance_agent.orchestration.tool_bindings import (
     CANONICAL_TOOL_NAMES,
     LLM_OFFERED_TOOL_NAMES,
@@ -129,6 +129,27 @@ def test_llm_input_models_reject_extra_llm_supplied_context() -> None:
 
     with pytest.raises(ValidationError):
         GetMaintenanceHistoryInput.model_validate({"asset_id": "PUMP-103"})
+
+
+def test_create_work_order_draft_input_rejects_invalid_priority_and_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        CreateWorkOrderDraftInput.model_validate(
+            {
+                "issue": "Recurring bearing overheating",
+                "recommended_action": "Investigate root cause.",
+                "priority": "medium",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        CreateWorkOrderDraftInput.model_validate(
+            {
+                "issue": "Recurring bearing overheating",
+                "recommended_action": "Investigate root cause.",
+                "priority": "high",
+                "approved": True,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -252,23 +273,81 @@ async def test_query_scoped_bindings_map_llm_args_and_session(
 
 
 @pytest.mark.asyncio
-async def test_phase_six_tools_are_reserved_not_executed_via_current_bindings() -> None:
+async def test_create_work_order_draft_binding_injects_state_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = cast(AsyncSession, object())
+    asset = _asset()
+    calls: list[tuple[str, str, str, AssetRecord, str, AsyncSession]] = []
 
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        await invoke_tool_binding(
-            "create_work_order_draft",
-            {"issue": "Recurring bearing overheating", "priority": "high"},
-            _state(_asset()),
-            session,
+    async def fake_create_work_order_draft(
+        *,
+        issue: str,
+        recommended_action: str,
+        priority: str,
+        asset: AssetRecord,
+        request_id: str,
+        structured_evidence: list[object],
+        document_evidence: list[object],
+        session: AsyncSession,
+    ) -> object:
+        assert structured_evidence == ["structured"]
+        assert document_evidence == ["document"]
+        calls.append((issue, recommended_action, priority, asset, request_id, session))
+        return WorkOrderDraft(
+            draft_id=request_id,
+            asset_id=asset.asset_id,
+            issue=issue,
+            recommended_action=recommended_action,
+            priority=cast(Literal["low", "high"], priority),
+            supporting_evidence=[],
         )
 
+    monkeypatch.setattr(
+        "maintenance_agent.orchestration.tool_bindings.create_work_order_draft",
+        fake_create_work_order_draft,
+    )
+
+    result = await invoke_tool_binding(
+        "create_work_order_draft",
+        {
+            "issue": "Recurring bearing overheating",
+            "recommended_action": "Investigate root cause.",
+            "priority": "high",
+        },
+        cast(
+            GraphState,
+            {
+                **_state(asset),
+                "request_id": "REQ-123",
+                "structured_evidence": ["structured"],
+                "document_evidence": ["document"],
+            },
+        ),
+        session,
+    )
+
+    assert result is not None
+    assert calls == [
+        (
+            "Recurring bearing overheating",
+            "Investigate root cause.",
+            "high",
+            asset,
+            "REQ-123",
+            session,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_submit_work_order_is_reserved_for_phase_six_resume_path() -> None:
     with pytest.raises(ConsequentialActionGuardError):
         await invoke_tool_binding(
             "submit_work_order",
             {"draft_id": "DRAFT-001"},
             _state(_asset()),
-            session,
+            cast(AsyncSession, object()),
         )
 
 
@@ -283,14 +362,37 @@ async def test_submit_work_order_guard_requires_approved_status() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_work_order_draft_does_not_use_consequential_guard() -> None:
-    with pytest.raises(NotImplementedError, match="create_work_order_draft"):
-        await invoke_tool_binding(
-            "create_work_order_draft",
-            {"issue": "Recurring bearing overheating", "priority": "high"},
-            _state(_asset()),
-            cast(AsyncSession, object()),
+async def test_create_work_order_draft_does_not_use_consequential_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_create_work_order_draft(**kwargs: object) -> WorkOrderDraft:
+        del kwargs
+        return WorkOrderDraft(
+            draft_id="REQ-000",
+            asset_id="PUMP-103",
+            issue="Recurring bearing overheating",
+            recommended_action="Investigate root cause.",
+            priority="high",
+            supporting_evidence=[],
         )
+
+    monkeypatch.setattr(
+        "maintenance_agent.orchestration.tool_bindings.create_work_order_draft",
+        fake_create_work_order_draft,
+    )
+
+    result = await invoke_tool_binding(
+        "create_work_order_draft",
+        {
+            "issue": "Recurring bearing overheating",
+            "recommended_action": "Investigate root cause.",
+            "priority": "high",
+        },
+        _state(_asset()),
+        cast(AsyncSession, object()),
+    )
+
+    assert result is not None
 
 
 @pytest.mark.asyncio

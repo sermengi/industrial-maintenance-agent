@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from maintenance_agent.db.repositories.records import AssetRecord
 from maintenance_agent.llm.client import LLMTool
 from maintenance_agent.orchestration.state import GraphState, ToolResult
+from maintenance_agent.tools.create_work_order_draft import create_work_order_draft
 from maintenance_agent.tools.get_asset_status import get_asset_status
 from maintenance_agent.tools.get_maintenance_history import get_maintenance_history
 from maintenance_agent.tools.get_plant_policy import get_plant_policy
@@ -78,8 +79,8 @@ class GetPlantPolicyInput(ToolInputModel):
 
 class CreateWorkOrderDraftInput(ToolInputModel):
     issue: str
-    priority: str
-    recommended_action: str | None = None
+    recommended_action: str
+    priority: Literal["low", "high"]
 
 
 class SubmitWorkOrderInput(ToolInputModel):
@@ -184,8 +185,17 @@ async def invoke_tool_binding(
         return await get_plant_policy(policy_input.policy_type, session)
 
     if tool_name == "create_work_order_draft":
-        CreateWorkOrderDraftInput.model_validate(args)
-        raise NotImplementedError("create_work_order_draft is reserved for Phase 6.")
+        draft_input = CreateWorkOrderDraftInput.model_validate(args)
+        return await create_work_order_draft(
+            issue=draft_input.issue,
+            recommended_action=draft_input.recommended_action,
+            priority=draft_input.priority,
+            asset=_require_asset(state, tool_name),
+            request_id=str(state.get("request_id", "REQ-000")),
+            structured_evidence=state.get("structured_evidence", []),
+            document_evidence=state.get("document_evidence", []),
+            session=session,
+        )
 
     submit_input = SubmitWorkOrderInput.model_validate(args)
     return await submit_work_order(

@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
-from typing import cast
+from typing import Literal, cast
 
 import httpx
 import pytest
@@ -27,7 +27,7 @@ from maintenance_agent.orchestration.graph import (
     AgentGraphDependencies,
     build_agent_graph,
 )
-from maintenance_agent.orchestration.state import GraphState
+from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
@@ -108,6 +108,7 @@ async def test_work_order_draft_branch_is_reserved_for_phase_6_hitl(
                                 name="create_work_order_draft",
                                 input={
                                     "issue": "Recurring bearing overheating",
+                                    "recommended_action": "Investigate root cause.",
                                     "priority": "high",
                                 },
                             )
@@ -270,7 +271,7 @@ async def _fake_invoke_tool_binding(
     state: GraphState,
     session: AsyncSession,
 ) -> object:
-    del state, session
+    del session
     if tool_name == "resolve_asset":
         identifier = cast(str, args["identifier"])
         if identifier == "PUMP-999":
@@ -288,6 +289,15 @@ async def _fake_invoke_tool_binding(
         return SearchMaintenanceDocsResult(query="maintenance docs", results=[_doc_hit()])
     if tool_name == "get_plant_policy":
         return GetPlantPolicyResult(policy_type="recurring_fault")
+    if tool_name == "create_work_order_draft":
+        return WorkOrderDraft(
+            draft_id=state.get("request_id", "test-request"),
+            asset_id="PUMP-103",
+            issue=cast(str, args["issue"]),
+            recommended_action=cast(str, args["recommended_action"]),
+            priority=cast(Literal["low", "high"], args["priority"]),
+            supporting_evidence=[],
+        )
     raise AssertionError(f"Unexpected tool call: {tool_name}")
 
 

@@ -3,7 +3,7 @@ import inspect
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +30,7 @@ from maintenance_agent.orchestration.graph import (
     terminal_response_node,
 )
 from maintenance_agent.orchestration.retry import RetryExhaustedError, with_retry
-from maintenance_agent.orchestration.state import GraphState
+from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
@@ -938,6 +938,15 @@ async def _fake_invoke_tool_binding(
         return GetMaintenanceHistoryResult(asset=_asset())
     if tool_name == "search_maintenance_docs":
         return SearchMaintenanceDocsResult(query="bearing overheating", results=[_doc_hit()])
+    if tool_name == "create_work_order_draft":
+        return WorkOrderDraft(
+            draft_id=state.get("request_id", "test-request"),
+            asset_id="PUMP-103",
+            issue=cast(str, args["issue"]),
+            recommended_action=cast(str, args["recommended_action"]),
+            priority=cast(Literal["low", "high"], args["priority"]),
+            supporting_evidence=[],
+        )
     raise AssertionError(f"Unexpected tool call: {tool_name}")
 
 

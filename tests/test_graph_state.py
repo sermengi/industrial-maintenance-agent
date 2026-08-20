@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, get_args, get_origin, get_type_hints
+from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -10,6 +10,7 @@ from maintenance_agent.orchestration.state import (
     GraphState,
     Intent,
     StructuredEvidenceItem,
+    WorkOrderDraft,
 )
 from maintenance_agent.schemas.agent import AgentQueryResponse
 from maintenance_agent.tools.get_asset_status import ClassifiedReading
@@ -67,6 +68,12 @@ def test_structured_evidence_item_covers_synthesis_facing_sources() -> None:
         FaultEventRecord,
         FaultRecurrence,
     }
+
+
+def test_work_order_draft_schema_has_no_lifecycle_status_and_forbids_extras() -> None:
+    assert "status" not in WorkOrderDraft.model_fields
+    assert WorkOrderDraft.model_config["extra"] == "forbid"
+    assert WorkOrderDraft.model_fields["priority"].annotation == Literal["low", "high"]
 
 
 def test_approval_status_values_are_reserved_for_hitl_lifecycle() -> None:
