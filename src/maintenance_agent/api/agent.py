@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.db import session as db_session
+from maintenance_agent.orchestration.graph import build_response
 from maintenance_agent.orchestration.state import GraphState
 from maintenance_agent.schemas.agent import AgentError, AgentQueryRequest, AgentQueryResponse
 
@@ -46,7 +47,11 @@ async def _invoke_agent_graph(
     session: AsyncSession,
 ) -> AgentQueryResponse:
     graph = cast(Any, request.app.state.agent_graph)
-    final_state = await graph.ainvoke(_initial_state(body, request_id, session))
+    config = _thread_config(request_id, session)
+    final_state = await graph.ainvoke(_initial_state(body, request_id, session), config=config)
+    checkpoint = graph.get_state(config)
+    if checkpoint.next:
+        return build_response(cast(GraphState, checkpoint.values), status="needs_approval")
     response = cast(AgentQueryResponse | None, final_state.get("response"))
     if response is None:
         raise RuntimeError("Agent graph completed without a response.")
@@ -88,3 +93,7 @@ def _initial_state(
         synthesis_evidence_used=[],
         response=None,
     )
+
+
+def _thread_config(request_id: str, session: AsyncSession) -> dict[str, object]:
+    return {"configurable": {"thread_id": request_id, "session": session}}

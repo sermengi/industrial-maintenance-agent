@@ -6,9 +6,11 @@ from decimal import Decimal
 from typing import Any, Literal, cast
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from maintenance_agent.db.repositories.records import AssetRecord
+from maintenance_agent.db.repositories.records import AssetRecord, WorkOrderRecord
 from maintenance_agent.llm.client import (
     LLMMessage,
     LLMResponse,
@@ -23,6 +25,7 @@ from maintenance_agent.orchestration.graph import (
     MAX_EVIDENCE_GATHERING_ITERATIONS,
     SYNTHESIS_NODE,
     AgentGraphDependencies,
+    build_response,
     build_agent_graph,
     evidence_gathering_node,
     request_interpretation_node,
@@ -53,9 +56,20 @@ def test_evidence_gathering_is_single_conditional_self_loop() -> None:
 
     assert {(edge.target, edge.conditional) for edge in evidence_edges} == {
         (EVIDENCE_GATHERING_NODE, True),
+        ("await_approval", True),
         ("synthesis", True),
         ("terminal_response", True),
     }
+
+
+def test_graph_uses_memory_saver_checkpointer() -> None:
+    compiled_graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient([LLMResponse()]),
+        )
+    )
+
+    assert isinstance(compiled_graph.checkpointer, MemorySaver)
 
 
 @pytest.mark.asyncio
@@ -671,7 +685,7 @@ def test_retry_settings_are_loaded_by_agent_graph_dependencies(
     assert dependencies.retry_delay_seconds == 0.25
 
 
-def test_terminal_node_is_only_agent_query_response_constructor() -> None:
+def test_build_response_is_only_agent_query_response_constructor() -> None:
     source = inspect.getsource(graph_module)
     tree = ast.parse(source)
     constructors: list[str] = []
@@ -686,7 +700,7 @@ def test_terminal_node_is_only_agent_query_response_constructor() -> None:
             ):
                 constructors.append(node.name)
 
-    assert constructors == ["terminal_response_node"]
+    assert constructors == ["build_response"]
 
 
 @pytest.mark.asyncio
@@ -876,6 +890,151 @@ async def test_pathological_evidence_loop_stops_at_iteration_cap(
     ]
 
 
+@pytest.mark.asyncio
+async def test_work_order_draft_run_interrupts_at_await_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("draft-thread")
+
+    interrupted_state = await graph.ainvoke(_state(request_id="draft-thread"), config=config)
+    checkpoint = graph.get_state(config)
+
+    assert "__interrupt__" in interrupted_state
+    assert checkpoint.next == ("await_approval",)
+    assert checkpoint.values["approval_status"] == "pending_approval"
+    assert checkpoint.values["work_order_draft"].draft_id == "draft-thread"
+    assert checkpoint.values["response"] is None
+    await graph.ainvoke(Command(resume="reject"), config=config)
+
+
+@pytest.mark.asyncio
+async def test_interrupted_draft_response_is_built_from_checkpoint_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call(priority="high")]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("approval-response-thread")
+
+    await graph.ainvoke(_state(request_id="approval-response-thread"), config=config)
+    response = build_response(
+        cast(GraphState, graph.get_state(config).values),
+        status="needs_approval",
+    )
+
+    assert response.status == "needs_approval"
+    assert response.pending_action is not None
+    assert response.pending_action.action_type == "submit_work_order"
+    assert response.pending_action.draft_id == "approval-response-thread"
+    assert response.answer is not None
+    assert "Recurring bearing overheating" in response.answer
+    assert "Priority: high" in response.answer
+    await graph.ainvoke(Command(resume="reject"), config=config)
+
+
+@pytest.mark.asyncio
+async def test_resume_approve_routes_through_submit_work_order_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    submitted: list[WorkOrderDraft] = []
+
+    async def fake_submit_work_order(
+        draft: WorkOrderDraft,
+        *,
+        approval_status: str,
+        session: AsyncSession,
+    ) -> WorkOrderRecord:
+        del session
+        assert approval_status == "approved"
+        submitted.append(draft)
+        return WorkOrderRecord(
+            work_order_id="WO-003",
+            asset_id=draft.asset_id,
+            issue=draft.issue,
+            priority=draft.priority,
+            status="submitted",
+            created_at=date(2026, 8, 20),
+            approved=True,
+        )
+
+    monkeypatch.setattr(graph_module, "submit_work_order", fake_submit_work_order)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("approve-thread")
+    await graph.ainvoke(_state(request_id="approve-thread"), config=config)
+
+    final_state = await graph.ainvoke(Command(resume="approve"), config=config)
+
+    assert submitted[0].draft_id == "approve-thread"
+    assert final_state["approval_status"] == "submitted"
+    assert final_state["response"].status == "ok"
+    assert final_state["response"].answer == (
+        "Work order WO-003 has been submitted for PUMP-103 (priority: high)."
+    )
+    assert [record.tool_name for record in final_state["tool_calls"]][-1] == "submit_work_order"
+    assert graph.get_state(config).next == ()
+
+
+@pytest.mark.asyncio
+async def test_resume_reject_skips_submit_work_order_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+
+    async def fail_if_submitted(*args: object, **kwargs: object) -> WorkOrderRecord:
+        raise AssertionError("submit_work_order should not be called")
+
+    monkeypatch.setattr(graph_module, "submit_work_order", fail_if_submitted)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("reject-thread")
+    await graph.ainvoke(_state(request_id="reject-thread"), config=config)
+
+    final_state = await graph.ainvoke(Command(resume="reject"), config=config)
+
+    assert final_state["approval_status"] == "rejected"
+    assert final_state["response"].status == "ok"
+    assert "No work order was created" in cast(str, final_state["response"].answer)
+    assert "submit_work_order" not in [record.tool_name for record in final_state["tool_calls"]]
+    assert graph.get_state(config).next == ()
+
+
 class _RecordingLLMClient:
     def __init__(self, responses: Sequence[LLMResponse]) -> None:
         self._responses = list(responses)
@@ -925,7 +1084,7 @@ async def _fake_invoke_tool_binding(
     state: GraphState,
     session: AsyncSession,
 ) -> object:
-    del args, state, session
+    del session
     if tool_name == "resolve_asset":
         return ResolveAssetResult(status="resolved", asset=_asset())
     if tool_name == "get_asset_status":
@@ -981,6 +1140,18 @@ def _synthesis_response() -> LLMResponse:
     )
 
 
+def _draft_tool_call(priority: Literal["low", "high"] = "high") -> ToolCallRequest:
+    return ToolCallRequest(
+        id="draft-1",
+        name="create_work_order_draft",
+        input={
+            "issue": "Recurring bearing overheating",
+            "recommended_action": "Investigate root cause.",
+            "priority": priority,
+        },
+    )
+
+
 def _classified_reading() -> ClassifiedReading:
     return ClassifiedReading(
         source_id="TS-001",
@@ -1030,6 +1201,7 @@ def _asset(asset_id: str = "PUMP-103") -> AssetRecord:
 
 def _state(
     *,
+    request_id: str = "test-request",
     query: str = "Diagnose PUMP-103.",
     asset_id_hint: str | None = None,
     intent: str | None = None,
@@ -1038,7 +1210,7 @@ def _state(
     return cast(
         GraphState,
         {
-            "request_id": "test-request",
+            "request_id": request_id,
             "session": cast(AsyncSession, object()),
             "query": query,
             "asset_id_hint": asset_id_hint,
@@ -1060,3 +1232,7 @@ def _state(
             "response": None,
         },
     )
+
+
+def _thread_config(thread_id: str) -> dict[str, object]:
+    return {"configurable": {"thread_id": thread_id}}

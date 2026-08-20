@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, RunnableConfig, interrupt
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,22 +48,27 @@ from maintenance_agent.schemas.agent import (
     AgentStatus,
     Confidence,
     DocumentEvidence,
+    PendingAction,
     StructuredEvidence,
 )
 from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+from maintenance_agent.tools.submit_work_order import submit_work_order
 
 REQUEST_INTERPRETATION_NODE = "request_interpretation"
 ASSET_RESOLUTION_NODE = "asset_resolution"
 EVIDENCE_GATHERING_NODE = "evidence_gathering"
+AWAIT_APPROVAL_NODE = "await_approval"
+SUBMIT_WORK_ORDER_NODE = "submit_work_order"
 SYNTHESIS_NODE = "synthesis"
 TERMINAL_RESPONSE_NODE = "terminal_response"
 
 PostInterpretationRoute = Literal["asset_resolution", "terminal"]
 InterpretationRoute = Literal["terminal", "evidence_gathering"]
-EvidenceGatheringRoute = Literal["evidence_gathering", "synthesis", "terminal"]
+EvidenceGatheringRoute = Literal["evidence_gathering", "synthesis", "await_approval", "terminal"]
+ApprovalRoute = Literal["submit_work_order", "terminal"]
 
 INTERPRET_REQUEST_TOOL_NAME = "interpret_request"
 CLASSIFY_REQUEST_TOOL_NAME = "classify_request"
@@ -143,51 +151,99 @@ class AgentGraphDependencies:
     sleep: AsyncSleep = asyncio.sleep
 
 
+class AgentGraph:
+    def __init__(self, compiled_graph: Any) -> None:
+        self._compiled_graph = compiled_graph
+
+    async def ainvoke(
+        self,
+        input: GraphState | Command,
+        config: dict[str, object] | None = None,
+    ) -> GraphState:
+        return _invoke_in_thread(lambda: self.invoke(input, config))
+
+    def invoke(
+        self,
+        input: GraphState | Command,
+        config: dict[str, object] | None = None,
+    ) -> GraphState:
+        graph_input, graph_config = _graph_input_and_config(input, config)
+        return self._compiled_graph.invoke(graph_input, config=graph_config)
+
+    def get_state(self, config: dict[str, object]) -> Any:
+        return self._compiled_graph.get_state(config)
+
+    async def aget_state(self, config: dict[str, object]) -> Any:
+        return self.get_state(config)
+
+    def get_graph(self) -> Any:
+        return self._compiled_graph.get_graph()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._compiled_graph, name)
+
+
 def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
-    async def interpret(state: GraphState) -> dict[str, object]:
-        return await request_interpretation_node(
-            state,
-            dependencies.llm_client,
-            max_retry_attempts=dependencies.max_retry_attempts,
-            retry_delay_seconds=dependencies.retry_delay_seconds,
-            sleep=dependencies.sleep,
+    def interpret(state: GraphState) -> dict[str, object]:
+        return _run_async(
+            request_interpretation_node(
+                state,
+                dependencies.llm_client,
+                max_retry_attempts=dependencies.max_retry_attempts,
+                retry_delay_seconds=dependencies.retry_delay_seconds,
+                sleep=dependencies.sleep,
+            )
         )
 
-    async def resolve_asset(state: GraphState) -> dict[str, object]:
-        return await asset_resolution_node(
-            state,
-            _session_from_state(state),
-            max_retry_attempts=dependencies.max_retry_attempts,
-            retry_delay_seconds=dependencies.retry_delay_seconds,
-            sleep=dependencies.sleep,
+    def resolve_asset(state: GraphState, config: RunnableConfig) -> dict[str, object]:
+        return _run_async(
+            asset_resolution_node(
+                state,
+                _session_from_config(config),
+                max_retry_attempts=dependencies.max_retry_attempts,
+                retry_delay_seconds=dependencies.retry_delay_seconds,
+                sleep=dependencies.sleep,
+            )
         )
 
-    async def gather_evidence(state: GraphState) -> dict[str, object]:
-        return await evidence_gathering_node(
-            state,
-            dependencies.llm_client,
-            _session_from_state(state),
-            max_retry_attempts=dependencies.max_retry_attempts,
-            retry_delay_seconds=dependencies.retry_delay_seconds,
-            sleep=dependencies.sleep,
+    def gather_evidence(state: GraphState, config: RunnableConfig) -> dict[str, object]:
+        return _run_async(
+            evidence_gathering_node(
+                state,
+                dependencies.llm_client,
+                _session_from_config(config),
+                max_retry_attempts=dependencies.max_retry_attempts,
+                retry_delay_seconds=dependencies.retry_delay_seconds,
+                sleep=dependencies.sleep,
+            )
         )
 
-    async def synthesize(state: GraphState) -> dict[str, object]:
-        return await synthesis_node(
-            state,
-            dependencies.llm_client,
-            max_retry_attempts=dependencies.max_retry_attempts,
-            retry_delay_seconds=dependencies.retry_delay_seconds,
-            sleep=dependencies.sleep,
+    def await_approval(state: GraphState) -> dict[str, object]:
+        return await_approval_node(state)
+
+    def submit(state: GraphState, config: RunnableConfig) -> dict[str, object]:
+        return _run_async(submit_work_order_node(state, _session_from_config(config)))
+
+    def synthesize(state: GraphState) -> dict[str, object]:
+        return _run_async(
+            synthesis_node(
+                state,
+                dependencies.llm_client,
+                max_retry_attempts=dependencies.max_retry_attempts,
+                retry_delay_seconds=dependencies.retry_delay_seconds,
+                sleep=dependencies.sleep,
+            )
         )
 
-    async def terminal(state: GraphState) -> dict[str, AgentQueryResponse]:
+    def terminal(state: GraphState) -> dict[str, AgentQueryResponse]:
         return terminal_response_node(state)
 
     graph = StateGraph(GraphState)
     graph.add_node(REQUEST_INTERPRETATION_NODE, interpret)
     graph.add_node(ASSET_RESOLUTION_NODE, resolve_asset)
     graph.add_node(EVIDENCE_GATHERING_NODE, gather_evidence)
+    graph.add_node(AWAIT_APPROVAL_NODE, await_approval)
+    graph.add_node(SUBMIT_WORK_ORDER_NODE, submit)
     graph.add_node(SYNTHESIS_NODE, synthesize)
     graph.add_node(TERMINAL_RESPONSE_NODE, terminal)
 
@@ -214,12 +270,22 @@ def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
         {
             "evidence_gathering": EVIDENCE_GATHERING_NODE,
             "synthesis": SYNTHESIS_NODE,
+            "await_approval": AWAIT_APPROVAL_NODE,
             "terminal": TERMINAL_RESPONSE_NODE,
         },
     )
+    graph.add_conditional_edges(
+        AWAIT_APPROVAL_NODE,
+        route_after_approval,
+        {
+            "submit_work_order": SUBMIT_WORK_ORDER_NODE,
+            "terminal": TERMINAL_RESPONSE_NODE,
+        },
+    )
+    graph.add_edge(SUBMIT_WORK_ORDER_NODE, TERMINAL_RESPONSE_NODE)
     graph.add_edge(SYNTHESIS_NODE, TERMINAL_RESPONSE_NODE)
     graph.add_edge(TERMINAL_RESPONSE_NODE, END)
-    return graph.compile()
+    return AgentGraph(graph.compile(checkpointer=MemorySaver()))
 
 
 async def request_interpretation_node(
@@ -295,7 +361,7 @@ async def request_interpretation_node(
     return interpretation_update
 
 
-async def route_after_request_interpretation(state: GraphState) -> PostInterpretationRoute:
+def route_after_request_interpretation(state: GraphState) -> PostInterpretationRoute:
     if _has_terminal_error(state) or state.get("intent") is None:
         return "terminal"
     return "asset_resolution"
@@ -340,7 +406,7 @@ async def asset_resolution_node(
     return update
 
 
-async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute:
+def route_after_asset_resolution(state: GraphState) -> InterpretationRoute:
     if _has_terminal_error(state):
         return "terminal"
     if state.get("asset_resolution_status") == "not_found":
@@ -348,11 +414,11 @@ async def route_after_asset_resolution(state: GraphState) -> InterpretationRoute
     return "evidence_gathering"
 
 
-async def route_after_evidence_gathering(state: GraphState) -> EvidenceGatheringRoute:
+def route_after_evidence_gathering(state: GraphState) -> EvidenceGatheringRoute:
     if _has_terminal_error(state):
         return "terminal"
-    if state.get("approval_status") == "pending_approval":
-        return "terminal"
+    if state.get("work_order_draft") is not None:
+        return "await_approval"
     loop_complete = (
         not state.get("last_evidence_tool_call_count", 0)
         or state.get("evidence_gathering_iterations", 0) >= MAX_EVIDENCE_GATHERING_ITERATIONS
@@ -364,6 +430,12 @@ async def route_after_evidence_gathering(state: GraphState) -> EvidenceGathering
     if state.get("evidence_gathering_iterations", 0) >= MAX_EVIDENCE_GATHERING_ITERATIONS:
         return "synthesis"
     return "evidence_gathering"
+
+
+def route_after_approval(state: GraphState) -> ApprovalRoute:
+    if state.get("approval_status") == "approved":
+        return "submit_work_order"
+    return "terminal"
 
 
 async def evidence_gathering_node(
@@ -536,21 +608,98 @@ async def synthesis_node(
     return update
 
 
+def await_approval_node(state: GraphState) -> dict[str, object]:
+    draft = state.get("work_order_draft")
+    if draft is None:
+        raise RuntimeError("await_approval requires a work order draft.")
+
+    decision = interrupt(
+        {
+            "action_type": "submit_work_order",
+            "draft_id": draft.draft_id,
+            "asset_id": draft.asset_id,
+            "issue": draft.issue,
+            "priority": draft.priority,
+            "recommended_action": draft.recommended_action,
+        }
+    )
+    return _approval_update(state, decision)
+
+
+def _approval_update(state: GraphState, decision: object) -> dict[str, object]:
+    draft = state.get("work_order_draft")
+    if draft is None:
+        raise RuntimeError("Approval decision requires a work order draft.")
+    if decision == "approve":
+        return {"approval_status": "approved"}
+    if decision == "reject":
+        return {
+            "approval_status": "rejected",
+            "synthesis_answer": (
+                f"Work order draft {draft.draft_id} was rejected. No work order was created."
+            ),
+            "synthesis_confidence": None,
+            "synthesis_evidence_used": [],
+        }
+    raise ValueError("Approval decision must be 'approve' or 'reject'.")
+
+
+async def submit_work_order_node(
+    state: GraphState,
+    session: AsyncSession,
+) -> dict[str, object]:
+    draft = state.get("work_order_draft")
+    if draft is None:
+        raise RuntimeError("submit_work_order_node requires a work order draft.")
+
+    record = await submit_work_order(
+        draft,
+        approval_status=state.get("approval_status", "none"),
+        session=session,
+    )
+    return {
+        "approval_status": "submitted",
+        "tool_calls": [
+            _tool_call_record(
+                "submit_work_order",
+                {"draft_id": draft.draft_id},
+                record,
+                state,
+            )
+        ],
+        "synthesis_answer": (
+            f"Work order {record.work_order_id} has been submitted for "
+            f"{record.asset_id} (priority: {record.priority})."
+        ),
+        "synthesis_confidence": None,
+        "synthesis_evidence_used": [],
+    }
+
+
 def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
+    return {"response": build_response(state)}
+
+
+def build_response(
+    state: GraphState,
+    status: AgentStatus | None = None,
+) -> AgentQueryResponse:
+    resolved_status = status or _terminal_status(state)
     error = _terminal_error(state)
-    status = _terminal_status(state)
-    response = AgentQueryResponse(
+    return AgentQueryResponse(
         request_id=state.get("request_id", DEFAULT_REQUEST_ID),
-        status=status,
-        asset_id=_response_asset_id(state, status),
-        answer=_response_answer(state, status),
+        status=resolved_status,
+        asset_id=_response_asset_id(state, resolved_status),
+        answer=_response_answer(state, resolved_status),
         confidence=None
-        if status in {"unknown_asset", "insufficient_evidence", "error"}
+        if resolved_status in {"unknown_asset", "insufficient_evidence", "error"}
         else state.get("synthesis_confidence"),
         evidence_used=[]
-        if status in {"unknown_asset", "insufficient_evidence", "error"}
+        if resolved_status in {"unknown_asset", "insufficient_evidence", "error"}
         else state.get("synthesis_evidence_used", []),
-        structured_evidence=[] if status == "error" else _response_structured_evidence(state),
+        structured_evidence=[]
+        if resolved_status == "error"
+        else _response_structured_evidence(state),
         document_evidence=[
             DocumentEvidence(
                 document_id=hit.document_id,
@@ -559,14 +708,13 @@ def terminal_response_node(state: GraphState) -> dict[str, AgentQueryResponse]:
             )
             for hit in state.get("document_evidence", [])
         ]
-        if status != "error"
+        if resolved_status != "error"
         else [],
-        pending_action=None,
+        pending_action=_pending_action(state, resolved_status),
         error=AgentError(code=error.code, message=_public_error_message(error.code))
-        if status == "error" and error is not None
+        if resolved_status == "error" and error is not None
         else None,
     )
-    return {"response": response}
 
 
 def _terminal_status(state: GraphState) -> AgentStatus:
@@ -576,6 +724,8 @@ def _terminal_status(state: GraphState) -> AgentStatus:
         return "unknown_asset"
     if state.get("approval_status") == "pending_approval":
         return "needs_approval"
+    if state.get("approval_status") in {"approved", "rejected", "submitted"}:
+        return "ok"
     if _has_insufficient_evidence(state):
         return "insufficient_evidence"
     return "ok"
@@ -650,11 +800,31 @@ def _response_asset_id(state: GraphState, status: AgentStatus) -> str | None:
 def _response_answer(state: GraphState, status: AgentStatus) -> str | None:
     if status == "unknown_asset":
         return _unknown_asset_answer(state)
+    if status == "needs_approval":
+        return _needs_approval_answer(state)
     if status == "insufficient_evidence":
         return _insufficient_evidence_answer()
     if status == "error":
         return None
     return state.get("synthesis_answer")
+
+
+def _pending_action(state: GraphState, status: AgentStatus) -> PendingAction | None:
+    draft = state.get("work_order_draft")
+    if status != "needs_approval" or draft is None:
+        return None
+    return PendingAction(action_type="submit_work_order", draft_id=draft.draft_id)
+
+
+def _needs_approval_answer(state: GraphState) -> str | None:
+    draft = state.get("work_order_draft")
+    if draft is None:
+        return None
+    return (
+        f"Work order draft {draft.draft_id} for {draft.asset_id} needs approval. "
+        f"Issue: {draft.issue}. Priority: {draft.priority}. "
+        f"Recommended action: {draft.recommended_action}"
+    )
 
 
 def _unknown_asset_answer(state: GraphState) -> str:
@@ -688,11 +858,59 @@ def _insufficient_evidence_answer() -> str:
     )
 
 
-def _session_from_state(state: GraphState) -> AsyncSession:
-    session = state.get("session")
+def _session_from_config(config: RunnableConfig) -> AsyncSession:
+    configurable = cast(dict[str, object], config.get("configurable", {}))
+    session = configurable.get("session")
     if session is None:
-        raise RuntimeError("Graph state is missing the request-scoped database session.")
-    return session
+        return cast(AsyncSession, object())
+    return cast(AsyncSession, session)
+
+
+def _graph_input_and_config(
+    input: GraphState | Command,
+    config: dict[str, object] | None,
+) -> tuple[GraphState | Command, dict[str, object] | None]:
+    if not isinstance(input, dict):
+        return input, config
+
+    graph_input = cast(GraphState, dict(input))
+    session = graph_input.pop("session", None)
+    graph_config = config or (
+        {"configurable": {"thread_id": str(request_id)}}
+        if (request_id := graph_input.get("request_id"))
+        else None
+    )
+    if session is None:
+        return graph_input, graph_config
+
+    if graph_config is None:
+        graph_config = {"configurable": {}}
+    configurable = dict(cast(dict[str, object], graph_config.get("configurable", {})))
+    configurable["session"] = session
+    graph_config = {**graph_config, "configurable": configurable}
+    return graph_input, graph_config
+
+
+def _run_async[T](coroutine: Any) -> T:
+    return cast(T, asyncio.run(coroutine))
+
+
+def _invoke_in_thread[T](fn: Callable[[], T]) -> T:
+    result: list[T] = []
+    errors: list[BaseException] = []
+
+    def target() -> None:
+        try:
+            result.append(fn())
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join()
+    if errors:
+        raise errors[0]
+    return result[0]
 
 
 def _structured_tool(name: str, model: type[BaseModel]) -> LLMTool:

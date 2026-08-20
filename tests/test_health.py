@@ -12,6 +12,7 @@ from maintenance_agent.api import agent as agent_api
 from maintenance_agent.api.agent import query_agent
 from maintenance_agent.api.health import health
 from maintenance_agent.core.config import get_settings
+from maintenance_agent.orchestration.state import WorkOrderDraft
 from maintenance_agent.schemas.agent import AgentError, AgentQueryRequest, AgentQueryResponse
 
 
@@ -59,6 +60,9 @@ async def test_agent_query_returns_validated_graph_response(
     assert graph.state is not None
     assert graph.state["request_id"] == response.request_id
     assert graph.state["query"] == request.query
+    assert graph.config is not None
+    assert graph.config["configurable"]["thread_id"] == response.request_id
+    assert graph.config["configurable"]["session"] is not None
 
 
 @pytest.mark.asyncio
@@ -101,6 +105,29 @@ async def test_agent_query_generates_request_id_per_call(
 
 
 @pytest.mark.asyncio
+async def test_agent_query_builds_needs_approval_response_from_interrupted_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _InterruptedGraph()
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    response = await query_agent(
+        _request_with_graph(graph),
+        AgentQueryRequest(query="Create a work order for PUMP-103.", asset_id="PUMP-103"),
+    )
+
+    assert response.status == "needs_approval"
+    assert response.pending_action is not None
+    assert response.pending_action.action_type == "submit_work_order"
+    assert response.pending_action.draft_id == response.request_id
+    assert response.answer is not None
+    assert "Recurring bearing overheating" in response.answer
+    assert graph.config is not None
+    assert graph.config["configurable"]["thread_id"] == response.request_id
+    assert graph.config["configurable"]["session"] is not None
+
+
+@pytest.mark.asyncio
 async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,9 +154,15 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
 class _FakeGraph:
     def __init__(self) -> None:
         self.state: dict[str, Any] | None = None
+        self.config: dict[str, Any] | None = None
 
-    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.state = state
+        self.config = config
         return {
             "response": AgentQueryResponse(
                 request_id=state["request_id"],
@@ -144,11 +177,51 @@ class _FakeGraph:
             )
         }
 
+    def get_state(self, config: dict[str, Any]) -> Any:
+        self.config = config
+        return SimpleNamespace(next=(), values=self.state)
+
 
 class _FailingGraph:
-    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
-        del state
+    async def ainvoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del state, config
         raise RuntimeError("graph failed")
+
+
+class _InterruptedGraph:
+    def __init__(self) -> None:
+        self.state: dict[str, Any] | None = None
+        self.config: dict[str, Any] | None = None
+
+    async def ainvoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.state = {
+            **state,
+            "asset_resolution_status": "resolved",
+            "work_order_draft": WorkOrderDraft(
+                draft_id=state["request_id"],
+                asset_id="PUMP-103",
+                issue="Recurring bearing overheating",
+                recommended_action="Investigate root cause.",
+                priority="high",
+                supporting_evidence=[],
+            ),
+            "approval_status": "pending_approval",
+            "response": None,
+        }
+        self.config = config
+        return {**self.state, "__interrupt__": []}
+
+    def get_state(self, config: dict[str, Any]) -> Any:
+        self.config = config
+        return SimpleNamespace(next=("await_approval",), values=self.state)
 
 
 def _request_with_graph(graph: object) -> Any:

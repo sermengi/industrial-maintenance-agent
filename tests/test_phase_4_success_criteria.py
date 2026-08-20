@@ -68,7 +68,7 @@ async def test_lifespan_compiles_graph_once_for_reuse(monkeypatch: pytest.Monkey
     assert build_calls == 1
 
 
-def test_graph_compile_uses_no_phase_4_checkpointer() -> None:
+def test_graph_compile_uses_phase_6_memory_saver_checkpointer() -> None:
     source = inspect.getsource(graph_module.build_agent_graph)
     tree = ast.parse(source)
     compile_calls = [
@@ -81,7 +81,8 @@ def test_graph_compile_uses_no_phase_4_checkpointer() -> None:
 
     assert len(compile_calls) == 1
     assert compile_calls[0].args == []
-    assert compile_calls[0].keywords == []
+    assert [keyword.arg for keyword in compile_calls[0].keywords] == ["checkpointer"]
+    assert "MemorySaver" in ast.unparse(compile_calls[0].keywords[0].value)
 
 
 def test_graph_has_no_langchain_chat_model_dependency() -> None:
@@ -119,10 +120,16 @@ async def test_work_order_draft_branch_is_reserved_for_phase_6_hitl(
         )
     )
 
-    final_state = await graph.ainvoke(_state(query="Create a work order for PUMP-103."))
+    final_state = await graph.ainvoke(
+        _state(query="Create a work order for PUMP-103."),
+        config={"configurable": {"thread_id": "test-request"}},
+    )
+    checkpoint = graph.get_state({"configurable": {"thread_id": "test-request"}})
 
+    assert "__interrupt__" in final_state
+    assert checkpoint.next == ("await_approval",)
     assert final_state["approval_status"] == "pending_approval"
-    assert final_state["response"].status == "needs_approval"
+    assert final_state["response"] is None
 
 
 @pytest.mark.parametrize(
