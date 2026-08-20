@@ -32,7 +32,7 @@ Intent = Literal[
 AssetResolutionStatus = Literal["resolved", "not_found"]
 ApprovalStatus = Literal["none", "pending_approval", "approved", "rejected", "submitted"]
 
-StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence
+StructuredEvidenceItem = ClassifiedReading | FaultEventRecord | FaultRecurrence | WorkOrderRecord
 
 
 class WorkOrderDraft(BaseModel):

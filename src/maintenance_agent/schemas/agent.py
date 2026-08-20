@@ -21,6 +21,10 @@ class AgentQueryRequest(BaseModel):
     fault_code: str | None = Field(default=None, description="Optional explicit fault code hint.")
 
 
+class AgentApprovalRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+
+
 class StructuredEvidence(BaseModel):
     source: str
     source_type: str | None = None

@@ -3,7 +3,7 @@ from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
-from maintenance_agent.db.repositories.records import FaultEventRecord
+from maintenance_agent.db.repositories.records import FaultEventRecord, WorkOrderRecord
 from maintenance_agent.orchestration.state import (
     ApprovalStatus,
     AssetResolutionStatus,
@@ -67,6 +67,7 @@ def test_structured_evidence_item_covers_synthesis_facing_sources() -> None:
         ClassifiedReading,
         FaultEventRecord,
         FaultRecurrence,
+        WorkOrderRecord,
     }
 
 

@@ -1,19 +1,27 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import date
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.api import agent as agent_api
-from maintenance_agent.api.agent import query_agent
+from maintenance_agent.api.agent import query_agent, resolve_pending_action
 from maintenance_agent.api.health import health
 from maintenance_agent.core.config import get_settings
+from maintenance_agent.db.repositories.records import WorkOrderRecord
 from maintenance_agent.orchestration.state import WorkOrderDraft
-from maintenance_agent.schemas.agent import AgentError, AgentQueryRequest, AgentQueryResponse
+from maintenance_agent.schemas.agent import (
+    AgentApprovalRequest,
+    AgentError,
+    AgentQueryRequest,
+    AgentQueryResponse,
+    StructuredEvidence,
+)
 
 
 def test_app_registers_phase_zero_routes(app: FastAPI) -> None:
@@ -21,6 +29,7 @@ def test_app_registers_phase_zero_routes(app: FastAPI) -> None:
 
     assert "/health" in routes
     assert "/agent/query" in routes
+    assert "/agent/approvals/{draft_id}" in routes
 
 
 @pytest.mark.asyncio
@@ -151,6 +160,100 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     UUID(response.request_id)
 
 
+@pytest.mark.asyncio
+async def test_approval_endpoint_resumes_pending_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ApprovalGraph(decision="approve")
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    response = await resolve_pending_action(
+        _request_with_graph(graph),
+        "draft-123",
+        AgentApprovalRequest(decision="approve"),
+    )
+
+    assert response.status == "ok"
+    assert response.pending_action is None
+    assert response.structured_evidence == [
+        StructuredEvidence(
+            source="WorkOrderRecord",
+            source_type="work_order",
+            source_id="WO-003",
+            summary=str(
+                WorkOrderRecord(
+                    work_order_id="WO-003",
+                    asset_id="PUMP-103",
+                    issue="Recurring bearing overheating",
+                    priority="high",
+                    status="submitted",
+                    created_at=date(2026, 8, 20),
+                    approved=True,
+                )
+            ),
+            reference_id="WO-003",
+        )
+    ]
+    assert graph.resume_value == "approve"
+    assert graph.config is not None
+    assert graph.config["configurable"]["thread_id"] == "draft-123"
+    assert graph.config["configurable"]["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_approval_endpoint_resumes_pending_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ApprovalGraph(decision="reject")
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    response = await resolve_pending_action(
+        _request_with_graph(graph),
+        "draft-123",
+        AgentApprovalRequest(decision="reject"),
+    )
+
+    assert response.status == "ok"
+    assert response.pending_action is None
+    assert response.structured_evidence == []
+    assert "No work order was created" in cast(str, response.answer)
+    assert graph.resume_value == "reject"
+
+
+@pytest.mark.asyncio
+async def test_approval_endpoint_returns_404_for_unknown_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_pending_action(
+            _request_with_graph(_NoCheckpointGraph()),
+            "missing-draft",
+            AgentApprovalRequest(decision="approve"),
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_approval_endpoint_returns_409_for_resolved_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _ResolvedCheckpointGraph()
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await resolve_pending_action(
+            _request_with_graph(graph),
+            "resolved-draft",
+            AgentApprovalRequest(decision="approve"),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert graph.invoke_count == 0
+
+
 class _FakeGraph:
     def __init__(self) -> None:
         self.state: dict[str, Any] | None = None
@@ -222,6 +325,93 @@ class _InterruptedGraph:
     def get_state(self, config: dict[str, Any]) -> Any:
         self.config = config
         return SimpleNamespace(next=("await_approval",), values=self.state)
+
+
+class _ApprovalGraph:
+    def __init__(self, decision: str) -> None:
+        self.decision = decision
+        self.resume_value: str | None = None
+        self.config: dict[str, Any] | None = None
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        self.config = config
+        return SimpleNamespace(next=("await_approval",), values={"request_id": "draft-123"})
+
+    async def ainvoke(
+        self,
+        command: Any,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.config = config
+        self.resume_value = cast(str, command.resume)
+        if self.decision == "reject":
+            return {
+                "response": AgentQueryResponse(
+                    request_id="draft-123",
+                    status="ok",
+                    asset_id="PUMP-103",
+                    answer="Work order draft draft-123 was rejected. No work order was created.",
+                    confidence=None,
+                    structured_evidence=[],
+                    document_evidence=[],
+                    pending_action=None,
+                    error=None,
+                )
+            }
+        record = WorkOrderRecord(
+            work_order_id="WO-003",
+            asset_id="PUMP-103",
+            issue="Recurring bearing overheating",
+            priority="high",
+            status="submitted",
+            created_at=date(2026, 8, 20),
+            approved=True,
+        )
+        return {
+            "response": AgentQueryResponse(
+                request_id="draft-123",
+                status="ok",
+                asset_id="PUMP-103",
+                answer="Work order WO-003 has been submitted for PUMP-103 (priority: high).",
+                confidence=None,
+                structured_evidence=[
+                    StructuredEvidence(
+                        source="WorkOrderRecord",
+                        source_type="work_order",
+                        source_id="WO-003",
+                        summary=str(record),
+                        reference_id="WO-003",
+                    )
+                ],
+                document_evidence=[],
+                pending_action=None,
+                error=None,
+            )
+        }
+
+
+class _NoCheckpointGraph:
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        del config
+        return SimpleNamespace(next=(), values={})
+
+
+class _ResolvedCheckpointGraph:
+    def __init__(self) -> None:
+        self.invoke_count = 0
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        del config
+        return SimpleNamespace(next=(), values={"request_id": "resolved-draft"})
+
+    async def ainvoke(
+        self,
+        command: Any,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del command, config
+        self.invoke_count += 1
+        return {}
 
 
 def _request_with_graph(graph: object) -> Any:

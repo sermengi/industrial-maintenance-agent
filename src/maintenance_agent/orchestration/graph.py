@@ -667,6 +667,7 @@ async def submit_work_order_node(
                 state,
             )
         ],
+        "structured_evidence": [record],
         "synthesis_answer": (
             f"Work order {record.work_order_id} has been submitted for "
             f"{record.asset_id} (priority: {record.priority})."

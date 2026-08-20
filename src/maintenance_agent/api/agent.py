@@ -3,13 +3,19 @@ from contextlib import asynccontextmanager
 from typing import Any, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.db import session as db_session
 from maintenance_agent.orchestration.graph import build_response
 from maintenance_agent.orchestration.state import GraphState
-from maintenance_agent.schemas.agent import AgentError, AgentQueryRequest, AgentQueryResponse
+from maintenance_agent.schemas.agent import (
+    AgentApprovalRequest,
+    AgentError,
+    AgentQueryRequest,
+    AgentQueryResponse,
+)
 
 router = APIRouter()
 
@@ -38,6 +44,28 @@ async def query_agent(
                 message=str(exc),
             ),
         )
+
+
+@router.post("/approvals/{draft_id}", response_model=AgentQueryResponse)
+async def resolve_pending_action(
+    request: Request,
+    draft_id: str,
+    body: AgentApprovalRequest,
+) -> AgentQueryResponse:
+    async with _request_session() as session:
+        graph = cast(Any, request.app.state.agent_graph)
+        config = _thread_config(draft_id, session)
+        checkpoint = await graph.aget_state(config)
+        if not getattr(checkpoint, "values", None):
+            raise HTTPException(status_code=404, detail="Pending action not found.")
+        if not getattr(checkpoint, "next", ()):
+            raise HTTPException(status_code=409, detail="Pending action has already been resolved.")
+
+        final_state = await graph.ainvoke(Command(resume=body.decision), config=config)
+        response = cast(AgentQueryResponse | None, final_state.get("response"))
+        if response is None:
+            raise RuntimeError("Agent graph completed without a response.")
+        return response
 
 
 async def _invoke_agent_graph(

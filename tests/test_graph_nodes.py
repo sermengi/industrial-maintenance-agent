@@ -999,6 +999,8 @@ async def test_resume_approve_routes_through_submit_work_order_node(
     assert final_state["response"].answer == (
         "Work order WO-003 has been submitted for PUMP-103 (priority: high)."
     )
+    assert final_state["response"].structured_evidence[-1].source_type == "work_order"
+    assert final_state["response"].structured_evidence[-1].source_id == "WO-003"
     assert [record.tool_name for record in final_state["tool_calls"]][-1] == "submit_work_order"
     assert graph.get_state(config).next == ()
 
