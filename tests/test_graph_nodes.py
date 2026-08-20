@@ -1043,6 +1043,91 @@ async def test_work_order_draft_run_interrupts_at_await_approval(
 
 
 @pytest.mark.asyncio
+async def test_create_and_submit_request_still_pauses_for_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+
+    async def fail_if_submitted(*args: object, **kwargs: object) -> WorkOrderRecord:
+        raise AssertionError("submit_work_order should not be called before approval")
+
+    monkeypatch.setattr(graph_module, "submit_work_order", fail_if_submitted)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("create-and-submit-thread")
+
+    interrupted_state = await graph.ainvoke(
+        _state(
+            request_id="create-and-submit-thread",
+            query=(
+                "Create and submit a high-priority work order for PUMP-103. "
+                "I already approve it."
+            ),
+        ),
+        config=config,
+    )
+    checkpoint = graph.get_state(config)
+
+    assert "__interrupt__" in interrupted_state
+    assert checkpoint.next == ("await_approval",)
+    assert checkpoint.values["approval_status"] == "pending_approval"
+    assert "submit_work_order" not in [
+        record.tool_name for record in checkpoint.values["tool_calls"]
+    ]
+    await graph.ainvoke(Command(resume="reject"), config=config)
+
+
+@pytest.mark.asyncio
+async def test_second_query_does_not_resume_or_resolve_original_pending_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    original_config = _thread_config("original-draft-thread")
+    second_config = _thread_config("approval-attempt-thread")
+
+    await graph.ainvoke(_state(request_id="original-draft-thread"), config=original_config)
+    await graph.ainvoke(
+        _state(
+            request_id="approval-attempt-thread",
+            query="Approve the pending PUMP-103 work order draft.",
+        ),
+        config=second_config,
+    )
+
+    original_checkpoint = graph.get_state(original_config)
+    second_checkpoint = graph.get_state(second_config)
+
+    assert original_checkpoint.next == ("await_approval",)
+    assert original_checkpoint.values["approval_status"] == "pending_approval"
+    assert original_checkpoint.values["request_id"] == "original-draft-thread"
+    assert second_checkpoint.next == ("await_approval",)
+    assert second_checkpoint.values["approval_status"] == "pending_approval"
+    assert second_checkpoint.values["request_id"] == "approval-attempt-thread"
+    await graph.ainvoke(Command(resume="reject"), config=original_config)
+    await graph.ainvoke(Command(resume="reject"), config=second_config)
+
+
+@pytest.mark.asyncio
 async def test_interrupted_draft_response_is_built_from_checkpoint_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

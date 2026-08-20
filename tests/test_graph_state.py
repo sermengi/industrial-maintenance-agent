@@ -1,6 +1,7 @@
 import operator
 from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 
+import pytest
 from pydantic import BaseModel
 
 from maintenance_agent.db.repositories.records import (
@@ -8,6 +9,7 @@ from maintenance_agent.db.repositories.records import (
     PlantPolicyRecord,
     WorkOrderRecord,
 )
+from maintenance_agent.orchestration.graph import IntentExtractionOutput
 from maintenance_agent.orchestration.state import (
     ApprovalStatus,
     AssetResolutionStatus,
@@ -92,6 +94,27 @@ def test_work_order_draft_schema_has_no_lifecycle_status_and_forbids_extras() ->
     assert "status" not in WorkOrderDraft.model_fields
     assert WorkOrderDraft.model_config["extra"] == "forbid"
     assert WorkOrderDraft.model_fields["priority"].annotation == Literal["low", "high"]
+
+
+def test_llm_facing_models_cannot_set_approval_status() -> None:
+    assert "approval_status" not in IntentExtractionOutput.model_fields
+    assert "approved" not in IntentExtractionOutput.model_fields
+    assert "approval_status" not in WorkOrderDraft.model_fields
+    assert "approved" not in WorkOrderDraft.model_fields
+
+
+def test_work_order_draft_rejects_approval_injection_field() -> None:
+    with pytest.raises(ValueError):
+        WorkOrderDraft.model_validate(
+            {
+                "draft_id": "draft-123",
+                "asset_id": "PUMP-103",
+                "issue": "Recurring bearing overheating",
+                "recommended_action": "Investigate root cause.",
+                "priority": "high",
+                "approved": True,
+            }
+        )
 
 
 def test_approval_status_values_are_reserved_for_hitl_lifecycle() -> None:
