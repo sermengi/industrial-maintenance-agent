@@ -14,7 +14,7 @@ from maintenance_agent.api import agent as agent_api
 from maintenance_agent.api.agent import query_agent, resolve_pending_action
 from maintenance_agent.api.health import health
 from maintenance_agent.core.config import get_settings
-from maintenance_agent.db.repositories.records import WorkOrderRecord
+from maintenance_agent.db.repositories.records import AssetRecord, WorkOrderRecord
 from maintenance_agent.orchestration.state import ToolCallRecord, WorkOrderDraft
 from maintenance_agent.schemas.agent import (
     AgentApprovalRequest,
@@ -196,7 +196,7 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     )
 
     assert response.status == "error"
-    assert response.asset_id == "PUMP-103"
+    assert response.asset_id is None
     assert response.answer is None
     assert response.evidence_used == []
     assert response.structured_evidence == []
@@ -214,6 +214,22 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     assert event.latency_ms == 750
     assert event.final_output is response
     assert event.error == response.error
+
+
+@pytest.mark.asyncio
+async def test_agent_query_reports_resolved_asset_id_on_post_resolution_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request_with_graph(_FailingGraphWithResolvedAsset())
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    response = await query_agent(
+        request,
+        AgentQueryRequest(query="Submit the work order.", asset_id="PUMP-999"),
+    )
+
+    assert response.status == "error"
+    assert response.asset_id == "PUMP-103"
 
 
 @pytest.mark.asyncio
@@ -464,6 +480,32 @@ class _FailingGraph:
     ) -> dict[str, Any]:
         del state, config
         raise RuntimeError("graph failed")
+
+
+class _FailingGraphWithResolvedAsset:
+    async def ainvoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        del state, config
+        raise RuntimeError("guard tripped after asset resolution")
+
+    async def aget_state(self, config: dict[str, Any]) -> Any:
+        del config
+        return SimpleNamespace(
+            next=(),
+            values={
+                "asset": AssetRecord(
+                    asset_id="PUMP-103",
+                    asset_type="centrifugal_pump",
+                    model="CP-200",
+                    location="Line 3",
+                    installation_date=date(2021, 6, 1),
+                    status="operational",
+                )
+            },
+        )
 
 
 class _InterruptedGraph:

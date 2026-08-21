@@ -52,7 +52,7 @@ async def query_agent(
         response = AgentQueryResponse(
             request_id=request_id,
             status="error",
-            asset_id=body.asset_id,
+            asset_id=await _asset_id_from_checkpoint(request, request_id),
             answer=None,
             confidence=None,
             structured_evidence=[],
@@ -125,6 +125,17 @@ async def _invoke_agent_graph(
     if response is None:
         raise RuntimeError("Agent graph completed without a response.")
     return response, cast(GraphState, final_state)
+
+
+async def _asset_id_from_checkpoint(request: Request, request_id: str) -> str | None:
+    try:
+        graph = cast(Any, request.app.state.agent_graph)
+        checkpoint = await graph.aget_state({"configurable": {"thread_id": request_id}})
+    except Exception:
+        return None
+    values = getattr(checkpoint, "values", None) or {}
+    asset = values.get("asset")
+    return asset.asset_id if asset is not None else None
 
 
 async def _capture_run_event(

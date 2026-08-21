@@ -150,5 +150,15 @@ resolve to `None` under this fix, same as before.
 
 ## Status
 
-Not yet implemented. Implementation plan: see
-`docs/superpowers/plans/2026-08-21-route-asset-id-checkpoint-fix.md`.
+Implemented. `src/maintenance_agent/api/agent.py`'s route-level
+`except Exception as exc:` block now sources `asset_id` from
+`_asset_id_from_checkpoint`, which reads the graph's checkpoint for the
+current `thread_id` and returns the resolved asset's ID if `resolve_asset`
+had already succeeded, `None` otherwise (including when no checkpoint
+exists at all, or when the graph implementation doesn't support
+`get_state`/`aget_state`). Regression coverage: the existing
+`test_agent_query_maps_unhandled_graph_exception_to_error_response` now
+asserts `asset_id is None` for a pre-resolution failure, and a new
+`test_agent_query_reports_resolved_asset_id_on_post_resolution_failure`
+asserts the checkpointed asset is reported even when the request supplied
+a different (or no) `asset_id` hint.
