@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from maintenance_agent.schemas.run_event import RunEvent, ToolCallSummary
 from maintenance_agent.telemetry.run_events import EmitFn, noop_emit_run_event, record_run_event
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 Clock = Callable[[], datetime]
 
 
@@ -45,7 +47,8 @@ async def query_agent(
                 response=response,
             )
             return response
-    except Exception as exc:
+    except Exception:
+        logger.exception("Unhandled exception in /agent/query.")
         response = AgentQueryResponse(
             request_id=request_id,
             status="error",
@@ -57,7 +60,7 @@ async def query_agent(
             pending_action=None,
             error=AgentError(
                 code="unhandled_exception",
-                message=str(exc),
+                message="An unexpected error occurred. Please try again shortly.",
             ),
         )
         await _capture_run_event(

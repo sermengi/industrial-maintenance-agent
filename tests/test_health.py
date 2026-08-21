@@ -203,7 +203,7 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     assert response.document_evidence == []
     assert response.error == AgentError(
         code="unhandled_exception",
-        message="graph failed",
+        message="An unexpected error occurred. Please try again shortly.",
     )
     UUID(response.request_id)
     assert len(emitted_events) == 1
@@ -214,6 +214,38 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     assert event.latency_ms == 750
     assert event.final_output is response
     assert event.error == response.error
+
+
+@pytest.mark.asyncio
+async def test_agent_query_never_leaks_raw_exception_text_but_logs_it(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_marker = "RAW_ROUTE_FAILURE_MARKER"
+
+    class _MarkerFailingGraph:
+        async def ainvoke(
+            self,
+            state: dict[str, Any],
+            config: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            del state, config
+            raise RuntimeError(raw_marker)
+
+    request = _request_with_graph(_MarkerFailingGraph())
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    with caplog.at_level(logging.ERROR, logger="maintenance_agent.api.agent"):
+        response = await query_agent(
+            request,
+            AgentQueryRequest(query="Check pump vibration."),
+        )
+
+    assert response.status == "error"
+    assert response.error is not None
+    assert raw_marker not in response.error.message
+    assert response.error.message == "An unexpected error occurred. Please try again shortly."
+    assert raw_marker in caplog.text
 
 
 @pytest.mark.asyncio

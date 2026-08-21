@@ -135,5 +135,13 @@ no other test file needs updating.
 
 ## Status
 
-Not yet implemented. Implementation plan: see
-`docs/superpowers/plans/2026-08-21-route-error-message-sanitization.md`.
+Implemented. `src/maintenance_agent/api/agent.py`'s route-level
+`except Exception:` block now logs the real exception via
+`logger.exception(...)` and returns a fixed templated `error.message`
+instead of the raw exception text. `error.code` remains
+`"unhandled_exception"`. Regression coverage: the existing
+`test_agent_query_maps_unhandled_graph_exception_to_error_response` asserts
+the templated string, and a new
+`test_agent_query_never_leaks_raw_exception_text_but_logs_it` asserts a
+marker string injected into a forced exception is absent from the response
+but present in the captured log output.
