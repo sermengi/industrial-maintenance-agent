@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
@@ -14,7 +14,7 @@ from maintenance_agent.api.agent import query_agent, resolve_pending_action
 from maintenance_agent.api.health import health
 from maintenance_agent.core.config import get_settings
 from maintenance_agent.db.repositories.records import WorkOrderRecord
-from maintenance_agent.orchestration.state import WorkOrderDraft
+from maintenance_agent.orchestration.state import ToolCallRecord, WorkOrderDraft
 from maintenance_agent.schemas.agent import (
     AgentApprovalRequest,
     AgentError,
@@ -22,6 +22,8 @@ from maintenance_agent.schemas.agent import (
     AgentQueryResponse,
     StructuredEvidence,
 )
+from maintenance_agent.schemas.run_event import RunEvent
+from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 
 
 def test_app_registers_phase_zero_routes(app: FastAPI) -> None:
@@ -72,6 +74,38 @@ async def test_agent_query_returns_validated_graph_response(
     assert graph.config is not None
     assert graph.config["configurable"]["thread_id"] == response.request_id
     assert graph.config["configurable"]["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_query_captures_run_event_with_route_latency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = _FakeGraph()
+    request = _request_with_graph(graph)
+    clock = _SequenceClock(
+        [
+            datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC),
+            datetime(2026, 8, 21, 10, 0, 1, 250000, tzinfo=UTC),
+        ]
+    )
+    request.app.state.run_event_clock = clock
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    response = await query_agent(
+        request,
+        AgentQueryRequest(query="Why is pump A vibrating?"),
+    )
+
+    event = cast(RunEvent, request.state.run_event)
+    assert event.run_id == response.request_id
+    assert event.event_id
+    assert event.emitted_at == datetime(2026, 8, 21, 10, 0, 1, 250000, tzinfo=UTC)
+    assert event.latency_ms == 1250
+    assert event.status == response.status
+    assert event.request == "Why is pump A vibrating?"
+    assert event.final_output is response
+    assert event.error is None
+    assert event.tool_calls == []
 
 
 @pytest.mark.asyncio
@@ -140,10 +174,17 @@ async def test_agent_query_builds_needs_approval_response_from_interrupted_check
 async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    request = _request_with_graph(_FailingGraph())
+    request.app.state.run_event_clock = _SequenceClock(
+        [
+            datetime(2026, 8, 21, 11, 0, 0, tzinfo=UTC),
+            datetime(2026, 8, 21, 11, 0, 0, 750000, tzinfo=UTC),
+        ]
+    )
     monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
 
     response = await query_agent(
-        _request_with_graph(_FailingGraph()),
+        request,
         AgentQueryRequest(query="Check pump vibration.", asset_id="PUMP-103"),
     )
 
@@ -158,6 +199,13 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
         message="graph failed",
     )
     UUID(response.request_id)
+    event = cast(RunEvent, request.state.run_event)
+    assert event.run_id == response.request_id
+    assert event.status == "error"
+    assert event.request == "Check pump vibration."
+    assert event.latency_ms == 750
+    assert event.final_output is response
+    assert event.error == response.error
 
 
 @pytest.mark.asyncio
@@ -165,10 +213,17 @@ async def test_approval_endpoint_resumes_pending_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     graph = _ApprovalGraph(decision="approve")
+    request = _request_with_graph(graph)
+    request.app.state.run_event_clock = _SequenceClock(
+        [
+            datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC),
+            datetime(2026, 8, 21, 12, 0, 0, 125000, tzinfo=UTC),
+        ]
+    )
     monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
 
     response = await resolve_pending_action(
-        _request_with_graph(graph),
+        request,
         "draft-123",
         AgentApprovalRequest(decision="approve"),
     )
@@ -198,6 +253,37 @@ async def test_approval_endpoint_resumes_pending_approval(
     assert graph.config is not None
     assert graph.config["configurable"]["thread_id"] == "draft-123"
     assert graph.config["configurable"]["session"] is not None
+    event = cast(RunEvent, request.state.run_event)
+    assert event.run_id == "draft-123"
+    assert event.request == "approve"
+    assert event.status == "ok"
+    assert event.latency_ms == 125
+    assert event.final_output is response
+
+
+def test_run_event_tool_calls_are_sourced_from_state_sorted_by_sequence() -> None:
+    response = AgentQueryResponse(request_id="req-123", status="ok")
+    event = agent_api._build_run_event(
+        start=datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC),
+        end=datetime(2026, 8, 21, 10, 0, 0, 100000, tzinfo=UTC),
+        run_id="req-123",
+        request_text="Check PUMP-103.",
+        state=cast(
+            Any,
+            {
+                "tool_calls": [
+                    _tool_call("get_asset_status", 2),
+                    _tool_call("resolve_asset", 1),
+                ]
+            },
+        ),
+        response=response,
+    )
+
+    assert [(call.tool_name, call.sequence) for call in event.tool_calls] == [
+        ("resolve_asset", 1),
+        ("get_asset_status", 2),
+    ]
 
 
 @pytest.mark.asyncio
@@ -415,7 +501,30 @@ class _ResolvedCheckpointGraph:
 
 
 def _request_with_graph(graph: object) -> Any:
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(agent_graph=graph)))
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(agent_graph=graph)),
+        state=SimpleNamespace(),
+    )
+
+
+class _SequenceClock:
+    def __init__(self, values: list[datetime]) -> None:
+        self._values = values
+
+    def __call__(self) -> datetime:
+        if not self._values:
+            raise AssertionError("Unexpected clock call.")
+        return self._values.pop(0)
+
+
+def _tool_call(tool_name: str, sequence: int) -> ToolCallRecord:
+    return ToolCallRecord(
+        tool_name=tool_name,
+        args={},
+        result=ResolveAssetResult(status="not_found"),
+        timestamp=datetime(2026, 8, 21, 10, 0, sequence, tzinfo=UTC),
+        sequence=sequence,
+    )
 
 
 @asynccontextmanager

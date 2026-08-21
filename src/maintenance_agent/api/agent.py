@@ -1,5 +1,6 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
@@ -16,8 +17,10 @@ from maintenance_agent.schemas.agent import (
     AgentQueryRequest,
     AgentQueryResponse,
 )
+from maintenance_agent.schemas.run_event import RunEvent, ToolCallSummary
 
 router = APIRouter()
+Clock = Callable[[], datetime]
 
 
 @router.post("/query", response_model=AgentQueryResponse)
@@ -25,12 +28,24 @@ async def query_agent(
     request: Request,
     body: AgentQueryRequest,
 ) -> AgentQueryResponse:
+    clock = _route_clock(request)
+    start = clock()
     request_id = str(uuid4())
     try:
         async with _request_session() as session:
-            return await _invoke_agent_graph(request, body, request_id, session)
+            response, state = await _invoke_agent_graph(request, body, request_id, session)
+            _capture_run_event(
+                request,
+                start=start,
+                end=clock(),
+                run_id=request_id,
+                request_text=body.query,
+                state=state,
+                response=response,
+            )
+            return response
     except Exception as exc:
-        return AgentQueryResponse(
+        response = AgentQueryResponse(
             request_id=request_id,
             status="error",
             asset_id=body.asset_id,
@@ -44,6 +59,16 @@ async def query_agent(
                 message=str(exc),
             ),
         )
+        _capture_run_event(
+            request,
+            start=start,
+            end=clock(),
+            run_id=request_id,
+            request_text=body.query,
+            state=None,
+            response=response,
+        )
+        return response
 
 
 @router.post("/approvals/{draft_id}", response_model=AgentQueryResponse)
@@ -52,6 +77,8 @@ async def resolve_pending_action(
     draft_id: str,
     body: AgentApprovalRequest,
 ) -> AgentQueryResponse:
+    clock = _route_clock(request)
+    start = clock()
     async with _request_session() as session:
         graph = cast(Any, request.app.state.agent_graph)
         config = _thread_config(draft_id, session)
@@ -65,6 +92,15 @@ async def resolve_pending_action(
         response = cast(AgentQueryResponse | None, final_state.get("response"))
         if response is None:
             raise RuntimeError("Agent graph completed without a response.")
+        _capture_run_event(
+            request,
+            start=start,
+            end=clock(),
+            run_id=draft_id,
+            request_text=body.decision,
+            state=cast(GraphState, final_state),
+            response=response,
+        )
         return response
 
 
@@ -73,17 +109,87 @@ async def _invoke_agent_graph(
     body: AgentQueryRequest,
     request_id: str,
     session: AsyncSession,
-) -> AgentQueryResponse:
+) -> tuple[AgentQueryResponse, GraphState]:
     graph = cast(Any, request.app.state.agent_graph)
     config = _thread_config(request_id, session)
     final_state = await graph.ainvoke(_initial_state(body, request_id, session), config=config)
     checkpoint = graph.get_state(config)
     if checkpoint.next:
-        return build_response(cast(GraphState, checkpoint.values), status="needs_approval")
+        interrupted_state = cast(GraphState, checkpoint.values)
+        return build_response(interrupted_state, status="needs_approval"), interrupted_state
     response = cast(AgentQueryResponse | None, final_state.get("response"))
     if response is None:
         raise RuntimeError("Agent graph completed without a response.")
-    return response
+    return response, cast(GraphState, final_state)
+
+
+def _capture_run_event(
+    request: Request,
+    *,
+    start: datetime,
+    end: datetime,
+    run_id: str,
+    request_text: str,
+    state: GraphState | None,
+    response: AgentQueryResponse,
+) -> RunEvent:
+    event = _build_run_event(
+        start=start,
+        end=end,
+        run_id=run_id,
+        request_text=request_text,
+        state=state,
+        response=response,
+    )
+    if request_state := getattr(request, "state", None):
+        request_state.run_event = event
+    return event
+
+
+def _build_run_event(
+    *,
+    start: datetime,
+    end: datetime,
+    run_id: str,
+    request_text: str,
+    state: GraphState | None,
+    response: AgentQueryResponse,
+) -> RunEvent:
+    return RunEvent(
+        event_id=uuid4(),
+        run_id=run_id,
+        emitted_at=end,
+        latency_ms=_latency_ms(start, end),
+        status=response.status,
+        request=request_text,
+        tool_calls=_tool_call_summaries(state),
+        final_output=response,
+        error=response.error,
+    )
+
+
+def _tool_call_summaries(state: GraphState | None) -> list[ToolCallSummary]:
+    if state is None:
+        return []
+    return [
+        ToolCallSummary(tool_name=record.tool_name, sequence=record.sequence)
+        for record in sorted(state.get("tool_calls", []), key=lambda record: record.sequence)
+    ]
+
+
+def _latency_ms(start: datetime, end: datetime) -> int:
+    return max(0, int((end - start).total_seconds() * 1000))
+
+
+def _route_clock(request: Request) -> Clock:
+    clock = getattr(request.app.state, "run_event_clock", None)
+    if clock is None:
+        return _utc_now
+    return cast(Clock, clock)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 @asynccontextmanager
