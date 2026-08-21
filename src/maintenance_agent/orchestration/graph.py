@@ -8,12 +8,23 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, RunnableConfig, interrupt
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from maintenance_agent.core.config import get_settings
+from maintenance_agent.db.repositories.records import (
+    AssetRecord,
+    FaultEventRecord,
+    MaintenanceEventRecord,
+    ObservationRecord,
+    OperatingLimitRecord,
+    PlantPolicyRecord,
+    TelemetrySnapshotRecord,
+    WorkOrderRecord,
+)
 from maintenance_agent.llm.client import (
     LLMClient,
     LLMMessage,
@@ -51,11 +62,15 @@ from maintenance_agent.schemas.agent import (
     PendingAction,
     StructuredEvidence,
 )
-from maintenance_agent.tools.get_asset_status import GetAssetStatusResult
+from maintenance_agent.tools.fault_recurrence import FaultRecurrence
+from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
-from maintenance_agent.tools.search_maintenance_docs import SearchMaintenanceDocsResult
+from maintenance_agent.tools.search_maintenance_docs import (
+    DocSearchHit,
+    SearchMaintenanceDocsResult,
+)
 from maintenance_agent.tools.submit_work_order import submit_work_order
 
 REQUEST_INTERPRETATION_NODE = "request_interpretation"
@@ -77,6 +92,29 @@ SYNTHESIZE_RESPONSE_TOOL_NAME = "synthesize_response"
 
 DEFAULT_REQUEST_ID = "graph-local-request"
 MAX_EVIDENCE_GATHERING_ITERATIONS = 6
+
+CHECKPOINT_ALLOWED_MSGPACK_TYPES = (
+    AgentQueryResponse,
+    AssetRecord,
+    ClassifiedReading,
+    DocSearchHit,
+    ErrorRecord,
+    FaultEventRecord,
+    FaultRecurrence,
+    GetAssetStatusResult,
+    GetMaintenanceHistoryResult,
+    GetPlantPolicyResult,
+    MaintenanceEventRecord,
+    ObservationRecord,
+    OperatingLimitRecord,
+    PlantPolicyRecord,
+    ResolveAssetResult,
+    SearchMaintenanceDocsResult,
+    TelemetrySnapshotRecord,
+    ToolCallRecord,
+    WorkOrderDraft,
+    WorkOrderRecord,
+)
 
 TOOLS_BY_INTENT: dict[Intent, tuple[LLMOfferedToolName, ...]] = {
     "procedure_lookup": ("search_maintenance_docs",),
@@ -106,6 +144,11 @@ TOOLS_BY_INTENT: dict[Intent, tuple[LLMOfferedToolName, ...]] = {
         "create_work_order_draft",
     ),
 }
+
+
+def build_graph_checkpointer() -> MemorySaver:
+    serde = JsonPlusSerializer(allowed_msgpack_modules=CHECKPOINT_ALLOWED_MSGPACK_TYPES)
+    return MemorySaver(serde=serde)
 
 
 class StructuredOutputValidationError(Exception):
@@ -286,7 +329,7 @@ def build_agent_graph(dependencies: AgentGraphDependencies) -> Any:
     graph.add_edge(SUBMIT_WORK_ORDER_NODE, TERMINAL_RESPONSE_NODE)
     graph.add_edge(SYNTHESIS_NODE, TERMINAL_RESPONSE_NODE)
     graph.add_edge(TERMINAL_RESPONSE_NODE, END)
-    return AgentGraph(graph.compile(checkpointer=MemorySaver()))
+    return AgentGraph(graph.compile(checkpointer=build_graph_checkpointer()))
 
 
 async def request_interpretation_node(

@@ -1,5 +1,6 @@
 import ast
 import inspect
+import logging
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
@@ -25,11 +26,13 @@ from maintenance_agent.llm.client import (
 from maintenance_agent.orchestration import graph as graph_module
 from maintenance_agent.orchestration.graph import (
     ASSET_RESOLUTION_NODE,
+    CHECKPOINT_ALLOWED_MSGPACK_TYPES,
     EVIDENCE_GATHERING_NODE,
     MAX_EVIDENCE_GATHERING_ITERATIONS,
     SYNTHESIS_NODE,
     AgentGraphDependencies,
     build_agent_graph,
+    build_graph_checkpointer,
     build_response,
     evidence_gathering_node,
     request_interpretation_node,
@@ -37,7 +40,7 @@ from maintenance_agent.orchestration.graph import (
     terminal_response_node,
 )
 from maintenance_agent.orchestration.retry import RetryExhaustedError, with_retry
-from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
+from maintenance_agent.orchestration.state import GraphState, ToolCallRecord, WorkOrderDraft
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
@@ -75,6 +78,16 @@ def test_graph_uses_memory_saver_checkpointer() -> None:
     )
 
     assert isinstance(compiled_graph.checkpointer, MemorySaver)
+
+
+def test_graph_checkpointer_allows_project_state_types() -> None:
+    checkpointer = build_graph_checkpointer()
+
+    assert isinstance(checkpointer, MemorySaver)
+    assert checkpointer.serde._allowed_msgpack_modules == {
+        (allowed_type.__module__, allowed_type.__name__)
+        for allowed_type in CHECKPOINT_ALLOWED_MSGPACK_TYPES
+    }
 
 
 @pytest.mark.asyncio
@@ -1040,6 +1053,42 @@ async def test_work_order_draft_run_interrupts_at_await_approval(
     assert checkpoint.values["work_order_draft"].draft_id == "draft-thread"
     assert checkpoint.values["response"] is None
     await graph.ainvoke(Command(resume="reject"), config=config)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_round_trip_preserves_project_types_without_serializer_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    caplog.set_level(logging.WARNING, logger="langgraph.checkpoint.serde.jsonplus")
+    graph = build_agent_graph(
+        AgentGraphDependencies(
+            llm_client=_RecordingLLMClient(
+                [
+                    _interpret_response("work_order_request", "PUMP-103"),
+                    _evidence_response("get_asset_status"),
+                    _evidence_response("search_maintenance_docs"),
+                    LLMResponse(tool_calls=[_draft_tool_call()]),
+                ]
+            )
+        )
+    )
+    config = _thread_config("checkpoint-types-thread")
+
+    await graph.ainvoke(_state(request_id="checkpoint-types-thread"), config=config)
+
+    checkpoint = graph.get_state(config)
+    assert isinstance(checkpoint.values["asset"], AssetRecord)
+    assert all(isinstance(record, ToolCallRecord) for record in checkpoint.values["tool_calls"])
+    assert isinstance(checkpoint.values["structured_evidence"][0], ClassifiedReading)
+    assert isinstance(checkpoint.values["document_evidence"][0], DocSearchHit)
+    assert isinstance(checkpoint.values["work_order_draft"], WorkOrderDraft)
+    assert not [
+        record
+        for record in caplog.records
+        if "Deserializing unregistered type" in record.getMessage()
+    ]
 
 
 @pytest.mark.asyncio

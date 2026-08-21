@@ -92,7 +92,7 @@ def test_graph_compile_uses_phase_6_memory_saver_checkpointer() -> None:
     assert len(compile_calls) == 1
     assert compile_calls[0].args == []
     assert [keyword.arg for keyword in compile_calls[0].keywords] == ["checkpointer"]
-    assert "MemorySaver" in ast.unparse(compile_calls[0].keywords[0].value)
+    assert ast.unparse(compile_calls[0].keywords[0].value) == "build_graph_checkpointer()"
 
 
 def test_graph_has_no_langchain_chat_model_dependency() -> None:

@@ -53,6 +53,7 @@ cover/
 
 # Local run telemetry
 run-events/
+notebooks/.phase7-run-events/
 
 # Translations
 *.mo
