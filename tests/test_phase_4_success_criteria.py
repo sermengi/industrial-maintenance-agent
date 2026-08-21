@@ -4,6 +4,8 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal, cast
 
 import httpx
@@ -28,7 +30,6 @@ from maintenance_agent.orchestration.graph import (
     build_agent_graph,
 )
 from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
-from maintenance_agent.telemetry.run_events import noop_emit_run_event
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
@@ -40,7 +41,10 @@ from maintenance_agent.tools.search_maintenance_docs import (
 
 
 @pytest.mark.asyncio
-async def test_lifespan_compiles_graph_once_for_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_lifespan_compiles_graph_once_for_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     compiled_graph = object()
     app = FastAPI()
     build_calls = 0
@@ -56,16 +60,20 @@ async def test_lifespan_compiles_graph_once_for_reuse(monkeypatch: pytest.Monkey
         build_calls += 1
         return compiled_graph
 
+    def fake_get_settings() -> object:
+        return SimpleNamespace(run_events_path=tmp_path / "events.jsonl")
+
     monkeypatch.setattr(
         "maintenance_agent.main.verify_database_connection", fake_verify_database_connection
     )
+    monkeypatch.setattr("maintenance_agent.main.get_settings", fake_get_settings)
     monkeypatch.setattr("maintenance_agent.main.get_llm_client", fake_get_llm_client)
     monkeypatch.setattr("maintenance_agent.main.build_agent_graph", fake_build_agent_graph)
 
     async with lifespan(app):
         assert app.state.agent_graph is compiled_graph
         assert app.state.agent_graph is compiled_graph
-        assert app.state.emit_run_event is noop_emit_run_event
+        assert callable(app.state.emit_run_event)
 
     assert build_calls == 1
 

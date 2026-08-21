@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,6 +23,10 @@ class Settings(BaseSettings):
     )
     max_retry_attempts: int = Field(default=3, ge=1, validation_alias="MAX_RETRY_ATTEMPTS")
     retry_delay_seconds: float = Field(default=0.5, ge=0, validation_alias="RETRY_DELAY_SECONDS")
+    run_events_path: Path = Field(
+        default=Path("run-events/run-events.jsonl"),
+        validation_alias="RUN_EVENTS_PATH",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
