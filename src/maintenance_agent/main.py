@@ -10,12 +10,14 @@ from maintenance_agent.core.config import get_settings
 from maintenance_agent.db.session import verify_database_connection
 from maintenance_agent.llm.client import get_llm_client
 from maintenance_agent.orchestration.graph import AgentGraphDependencies, build_agent_graph
+from maintenance_agent.telemetry.run_events import noop_emit_run_event
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await verify_database_connection()
     app.state.agent_graph = build_agent_graph(AgentGraphDependencies(llm_client=get_llm_client()))
+    app.state.emit_run_event = noop_emit_run_event
     yield
 
 

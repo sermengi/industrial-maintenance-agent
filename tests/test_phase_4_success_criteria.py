@@ -28,6 +28,7 @@ from maintenance_agent.orchestration.graph import (
     build_agent_graph,
 )
 from maintenance_agent.orchestration.state import GraphState, WorkOrderDraft
+from maintenance_agent.telemetry.run_events import noop_emit_run_event
 from maintenance_agent.tools.get_asset_status import ClassifiedReading, GetAssetStatusResult
 from maintenance_agent.tools.get_maintenance_history import GetMaintenanceHistoryResult
 from maintenance_agent.tools.get_plant_policy import GetPlantPolicyResult
@@ -64,6 +65,7 @@ async def test_lifespan_compiles_graph_once_for_reuse(monkeypatch: pytest.Monkey
     async with lifespan(app):
         assert app.state.agent_graph is compiled_graph
         assert app.state.agent_graph is compiled_graph
+        assert app.state.emit_run_event is noop_emit_run_event
 
     assert build_calls == 1
 

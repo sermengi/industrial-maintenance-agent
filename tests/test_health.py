@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
@@ -23,6 +24,7 @@ from maintenance_agent.schemas.agent import (
     StructuredEvidence,
 )
 from maintenance_agent.schemas.run_event import RunEvent
+from maintenance_agent.telemetry.run_events import record_run_event
 from maintenance_agent.tools.resolve_asset import ResolveAssetResult
 
 
@@ -82,6 +84,8 @@ async def test_agent_query_captures_run_event_with_route_latency(
 ) -> None:
     graph = _FakeGraph()
     request = _request_with_graph(graph)
+    emitted_events: list[RunEvent] = []
+    request.app.state.emit_run_event = _collecting_emitter(emitted_events)
     clock = _SequenceClock(
         [
             datetime(2026, 8, 21, 10, 0, 0, tzinfo=UTC),
@@ -96,7 +100,8 @@ async def test_agent_query_captures_run_event_with_route_latency(
         AgentQueryRequest(query="Why is pump A vibrating?"),
     )
 
-    event = cast(RunEvent, request.state.run_event)
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
     assert event.run_id == response.request_id
     assert event.event_id
     assert event.emitted_at == datetime(2026, 8, 21, 10, 0, 1, 250000, tzinfo=UTC)
@@ -175,6 +180,8 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _request_with_graph(_FailingGraph())
+    emitted_events: list[RunEvent] = []
+    request.app.state.emit_run_event = _collecting_emitter(emitted_events)
     request.app.state.run_event_clock = _SequenceClock(
         [
             datetime(2026, 8, 21, 11, 0, 0, tzinfo=UTC),
@@ -199,7 +206,8 @@ async def test_agent_query_maps_unhandled_graph_exception_to_error_response(
         message="graph failed",
     )
     UUID(response.request_id)
-    event = cast(RunEvent, request.state.run_event)
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
     assert event.run_id == response.request_id
     assert event.status == "error"
     assert event.request == "Check pump vibration."
@@ -214,6 +222,8 @@ async def test_approval_endpoint_resumes_pending_approval(
 ) -> None:
     graph = _ApprovalGraph(decision="approve")
     request = _request_with_graph(graph)
+    emitted_events: list[RunEvent] = []
+    request.app.state.emit_run_event = _collecting_emitter(emitted_events)
     request.app.state.run_event_clock = _SequenceClock(
         [
             datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC),
@@ -253,12 +263,55 @@ async def test_approval_endpoint_resumes_pending_approval(
     assert graph.config is not None
     assert graph.config["configurable"]["thread_id"] == "draft-123"
     assert graph.config["configurable"]["session"] is not None
-    event = cast(RunEvent, request.state.run_event)
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
     assert event.run_id == "draft-123"
     assert event.request == "approve"
     assert event.status == "ok"
     assert event.latency_ms == 125
     assert event.final_output is response
+
+
+@pytest.mark.asyncio
+async def test_failed_run_event_emission_is_logged_without_changing_response(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request_with_graph(_FakeGraph())
+    request.app.state.emit_run_event = _failing_emitter
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+
+    with caplog.at_level(logging.WARNING, logger="maintenance_agent.telemetry.run_events"):
+        response = await query_agent(
+            request,
+            AgentQueryRequest(query="Why is pump A vibrating?"),
+        )
+
+    assert response.status == "ok"
+    assert response.asset_id == "PUMP-103"
+    assert "Failed to emit run event." in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_record_run_event_never_raises_and_logs_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    event = RunEvent(
+        event_id=UUID("11111111-1111-4111-8111-111111111111"),
+        run_id="req-123",
+        emitted_at=datetime(2026, 8, 21, 10, 0, tzinfo=UTC),
+        latency_ms=10,
+        status="ok",
+        request="Check PUMP-103.",
+        tool_calls=[],
+        final_output=AgentQueryResponse(request_id="req-123", status="ok"),
+        error=None,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="maintenance_agent.telemetry.run_events"):
+        await record_run_event(_failing_emitter, event)
+
+    assert "Failed to emit run event." in caplog.text
 
 
 def test_run_event_tool_calls_are_sourced_from_state_sorted_by_sequence() -> None:
@@ -525,6 +578,18 @@ def _tool_call(tool_name: str, sequence: int) -> ToolCallRecord:
         timestamp=datetime(2026, 8, 21, 10, 0, sequence, tzinfo=UTC),
         sequence=sequence,
     )
+
+
+def _collecting_emitter(events: list[RunEvent]) -> Any:
+    async def emit(event: RunEvent) -> None:
+        events.append(event)
+
+    return emit
+
+
+async def _failing_emitter(event: RunEvent) -> None:
+    del event
+    raise OSError("telemetry unavailable")
 
 
 @asynccontextmanager

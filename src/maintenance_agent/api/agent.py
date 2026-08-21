@@ -18,6 +18,7 @@ from maintenance_agent.schemas.agent import (
     AgentQueryResponse,
 )
 from maintenance_agent.schemas.run_event import RunEvent, ToolCallSummary
+from maintenance_agent.telemetry.run_events import EmitFn, noop_emit_run_event, record_run_event
 
 router = APIRouter()
 Clock = Callable[[], datetime]
@@ -34,7 +35,7 @@ async def query_agent(
     try:
         async with _request_session() as session:
             response, state = await _invoke_agent_graph(request, body, request_id, session)
-            _capture_run_event(
+            await _capture_run_event(
                 request,
                 start=start,
                 end=clock(),
@@ -59,7 +60,7 @@ async def query_agent(
                 message=str(exc),
             ),
         )
-        _capture_run_event(
+        await _capture_run_event(
             request,
             start=start,
             end=clock(),
@@ -92,7 +93,7 @@ async def resolve_pending_action(
         response = cast(AgentQueryResponse | None, final_state.get("response"))
         if response is None:
             raise RuntimeError("Agent graph completed without a response.")
-        _capture_run_event(
+        await _capture_run_event(
             request,
             start=start,
             end=clock(),
@@ -123,7 +124,7 @@ async def _invoke_agent_graph(
     return response, cast(GraphState, final_state)
 
 
-def _capture_run_event(
+async def _capture_run_event(
     request: Request,
     *,
     start: datetime,
@@ -141,8 +142,7 @@ def _capture_run_event(
         state=state,
         response=response,
     )
-    if request_state := getattr(request, "state", None):
-        request_state.run_event = event
+    await record_run_event(_run_event_emitter(request), event)
     return event
 
 
@@ -190,6 +190,13 @@ def _route_clock(request: Request) -> Clock:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _run_event_emitter(request: Request) -> EmitFn:
+    emit = getattr(request.app.state, "emit_run_event", None)
+    if emit is None:
+        return noop_emit_run_event
+    return cast(EmitFn, emit)
 
 
 @asynccontextmanager
