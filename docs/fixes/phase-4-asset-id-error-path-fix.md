@@ -42,11 +42,11 @@ land in this exact handler:
 > "is exactly the kind of exception the Phase 4 Task 6 route-level
 > try/except exists to catch."
 
-That guard trips inside `create_work_order_draft`
-(`orchestration/graph.py`), which only runs after `resolve_asset` and
-evidence gathering have already completed. So in the one concrete scenario
-this handler is documented to exist for, the asset **was already resolved**
-by the time the exception fires — the opposite of what the notebook's
+For example, `_invoke_agent_graph` raises `RuntimeError("Agent graph
+completed without a response.")` at line 126 after a full graph run completes
+but returns an unexpected state shape. When that exception fires, `resolve_asset`
+and evidence gathering will have already completed, so the asset **was already
+resolved** and sitting in the checkpoint — the opposite of what the test's
 synthetic `FailingGraph` (which raises before any node runs) exercises.
 Today the route-level handler ignores this distinction entirely and always
 echoes `body.asset_id` — the client-supplied hint, Phase 0's "convenience

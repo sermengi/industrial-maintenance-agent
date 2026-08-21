@@ -131,11 +131,11 @@ async def _asset_id_from_checkpoint(request: Request, request_id: str) -> str | 
     try:
         graph = cast(Any, request.app.state.agent_graph)
         checkpoint = await graph.aget_state({"configurable": {"thread_id": request_id}})
+        values = getattr(checkpoint, "values", None) or {}
+        asset = values.get("asset")
+        return getattr(asset, "asset_id", None)
     except Exception:
         return None
-    values = getattr(checkpoint, "values", None) or {}
-    asset = values.get("asset")
-    return asset.asset_id if asset is not None else None
 
 
 async def _capture_run_event(
