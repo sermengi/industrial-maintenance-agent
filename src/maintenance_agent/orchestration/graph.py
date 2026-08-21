@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -10,7 +10,7 @@ from typing import Any, Literal, cast
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command, RunnableConfig, interrupt
+from langgraph.types import Command, RunnableConfig, interrupt  # type: ignore[attr-defined]
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -201,18 +201,18 @@ class AgentGraph:
 
     async def ainvoke(
         self,
-        input: GraphState | Command,
+        input: GraphState | Command[Any],
         config: dict[str, object] | None = None,
     ) -> GraphState:
         return _invoke_in_thread(lambda: self.invoke(input, config))
 
     def invoke(
         self,
-        input: GraphState | Command,
+        input: GraphState | Command[Any],
         config: dict[str, object] | None = None,
     ) -> GraphState:
         graph_input, graph_config = _graph_input_and_config(input, config)
-        return self._compiled_graph.invoke(graph_input, config=graph_config)
+        return cast(GraphState, self._compiled_graph.invoke(graph_input, config=graph_config))
 
     def get_state(self, config: dict[str, object]) -> Any:
         return self._compiled_graph.get_state(config)
@@ -917,9 +917,9 @@ def _session_from_config(config: RunnableConfig) -> AsyncSession:
 
 
 def _graph_input_and_config(
-    input: GraphState | Command,
+    input: GraphState | Command[Any],
     config: dict[str, object] | None,
-) -> tuple[GraphState | Command, dict[str, object] | None]:
+) -> tuple[GraphState | Command[Any], dict[str, object] | None]:
     if not isinstance(input, dict):
         return input, config
 
@@ -941,8 +941,8 @@ def _graph_input_and_config(
     return graph_input, graph_config
 
 
-def _run_async[T](coroutine: Any) -> T:
-    return cast(T, asyncio.run(coroutine))
+def _run_async[T](coroutine: Coroutine[Any, Any, T]) -> T:
+    return asyncio.run(coroutine)
 
 
 def _invoke_in_thread[T](fn: Callable[[], T]) -> T:
