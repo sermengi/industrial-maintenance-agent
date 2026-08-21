@@ -115,8 +115,7 @@ def test_work_order_status_check_accepts_completed_and_submitted_only() -> None:
     status_checks = [
         str(constraint.sqltext)
         for constraint in work_orders.constraints
-        if isinstance(constraint, CheckConstraint)
-        and constraint.name == "ck_work_orders_status"
+        if isinstance(constraint, CheckConstraint) and constraint.name == "ck_work_orders_status"
     ]
 
     assert status_checks == ["status IN ('completed', 'submitted')"]

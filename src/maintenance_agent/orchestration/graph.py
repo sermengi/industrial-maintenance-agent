@@ -521,6 +521,7 @@ async def evidence_gathering_node(
 
     for tool_call in response.tool_calls:
         if tool_call.name == "create_work_order_draft":
+
             async def invoke_draft_tool(
                 requested_tool_call: ToolCallRequest = tool_call,
             ) -> ToolResult:

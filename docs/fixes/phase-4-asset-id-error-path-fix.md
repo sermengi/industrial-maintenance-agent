@@ -73,17 +73,23 @@ async def _asset_id_from_checkpoint(request: Request, request_id: str) -> str | 
     try:
         graph = cast(Any, request.app.state.agent_graph)
         checkpoint = await graph.aget_state({"configurable": {"thread_id": request_id}})
+        values = getattr(checkpoint, "values", None) or {}
+        asset = values.get("asset")
+        return getattr(asset, "asset_id", None)
     except Exception:
         return None
-    values = getattr(checkpoint, "values", None) or {}
-    asset = values.get("asset")
-    return asset.asset_id if asset is not None else None
 ```
 
 And use it in the `except` block:
 
 ```python
-            asset_id=await _asset_id_from_checkpoint(request, request_id),
+except Exception:
+    logger.exception("Unhandled exception in /agent/query.")
+    response = AgentQueryResponse(
+        request_id=request_id,
+        status="error",
+        asset_id=await _asset_id_from_checkpoint(request, request_id),
+        answer=None,
 ```
 
 Design notes:

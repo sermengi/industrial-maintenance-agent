@@ -1117,8 +1117,7 @@ async def test_create_and_submit_request_still_pauses_for_approval(
         _state(
             request_id="create-and-submit-thread",
             query=(
-                "Create and submit a high-priority work order for PUMP-103. "
-                "I already approve it."
+                "Create and submit a high-priority work order for PUMP-103. I already approve it."
             ),
         ),
         config=config,
