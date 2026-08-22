@@ -22,12 +22,12 @@ def test_task_6_existing_push_pr_ci_workflow_is_unchanged() -> None:
     assert "RUN_GOLDEN_SCENARIOS" not in CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
 
-def test_task_6_golden_workflow_is_scheduled_and_manually_dispatchable_only() -> None:
+def test_task_6_golden_workflow_is_manually_dispatchable_only() -> None:
     workflow = _load_workflow(GOLDEN_WORKFLOW_PATH)
     triggers = cast(dict[str, Any], workflow["on"])
 
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
-    assert triggers["schedule"] == [{"cron": "17 3 * * *"}]
+    assert set(triggers) == {"workflow_dispatch"}
+    assert "schedule" not in triggers
     assert "push" not in triggers
     assert "pull_request" not in triggers
 

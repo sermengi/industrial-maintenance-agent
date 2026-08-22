@@ -311,37 +311,37 @@ Tasks 1–5 are locked.
 
 ## Task 6 — Add end-to-end regression coverage to CI where stable and cost-appropriate
 
-### CI cadence: scheduled + manual dispatch, not per-push (the central decision for this task)
+### CI cadence: manual dispatch, not per-push (the central decision for this task)
 
-- The golden-scenario suite (Task 4's real-LLM, ASGI-in-process job) runs as a **separate CI workflow, triggered on a schedule (e.g. nightly) plus `workflow_dispatch`** — not on every push/PR.
+- The golden-scenario suite (Task 4's real-LLM, ASGI-in-process job) runs as a **separate CI workflow, triggered by `workflow_dispatch` only** — not on every push/PR.
 - The existing Phase 0–7 CI job (`uv sync → ruff check → ruff format --check → mypy → pytest`, mocked LLM, no API key) is **unchanged** and continues to run on every push/PR exactly as it does today — this task adds a second, differently-paced job, it doesn't touch the first.
-- Rationale: a per-push real-LLM gate would multiply API cost/latency by commit frequency during active development, and — because the model is genuinely nondeterministic — could put a red X on an unrelated PR from ordinary model variance rather than a real regression, which erodes trust in the signal over time (the opposite of "debug-first, optimize for inspectability"). A nightly cadence still catches a regression within a day of it landing, and `workflow_dispatch` gives an on-demand run before anything that actually needs fresh confirmation (a release, a demo, a change to the interpretation/synthesis prompts).
+- Rationale: a per-push real-LLM gate would multiply API cost/latency by commit frequency during active development, and — because the model is genuinely nondeterministic — could put a red X on an unrelated PR from ordinary model variance rather than a real regression, which erodes trust in the signal over time (the opposite of "debug-first, optimize for inspectability"). `workflow_dispatch` keeps the expensive live-model regression available on demand before anything that actually needs fresh confirmation (a release, a demo, or a change to the interpretation/synthesis prompts).
 
 ### No retry on scenario failure
 
 - A failed scenario fails the job immediately — CI does not re-run it. A human then applies Task 5's triage taxonomy (prompt fix, genuine defect, dataset-spec discrepancy, or acceptable model variance worth a follow-up discussion) rather than CI silently absorbing the failure.
 - This deliberately doesn't reuse Phase 5 Task 4's `max_retry_attempts` mechanism at this layer: that mechanism exists for transient technical failures (a dropped connection, a rate limit) where a retry has a real chance of succeeding for a reason unrelated to correctness. A golden-scenario assertion failure is a claim about whether the *agent's actual behavior* matched the frozen contract — retrying and hoping for a different roll would quietly launder exactly the kind of signal this whole phase exists to surface.
 
-### The docker-compose full-stack variant stays manual-only
+### The docker-compose full-stack variant stays opt-in manual-only
 
-- Task 4's second suite variant (identical tests, pointed at a live `docker compose up` stack instead of the ASGI transport) is **not** on the nightly schedule — it's `workflow_dispatch`-only, run before a release or a demo. It exercises the container/startup path (Phase 9's "fresh-clone walkthrough" concern) more than agent behavior, and the nightly ASGI-transport run already gives near-daily coverage of the latter — running both on a schedule would be redundant cost for overlapping signal.
+- Task 4's second suite variant (identical tests, pointed at a live `docker compose up` stack instead of the ASGI transport) is behind the `workflow_dispatch` input `run_container_variant=true`, run before a release or a demo when the container/startup path also needs validation. It exercises the container/startup path (Phase 9's "fresh-clone walkthrough" concern) more than agent behavior, so it remains opt-in even within the manual golden workflow.
 
 ### `manual_review_report.md` as a CI artifact
 
-- Every golden-suite run (scheduled or dispatched) uploads `tests/golden/manual_review_report.md` via `actions/upload-artifact`, so Task 3's report is downloadable from the Actions run without needing a local re-run. This is the natural connective step between Task 3 (what the report contains) and Task 6 (when it's produced) — no new content or mechanism, just making an existing output retrievable.
+- Every golden-suite run uploads `tests/golden/manual_review_report.md` via `actions/upload-artifact`, so Task 3's report is downloadable from the Actions run without needing a local re-run. This is the natural connective step between Task 3 (what the report contains) and Task 6 (when it's produced) — no new content or mechanism, just making an existing output retrievable.
 
 ### No new alerting mechanism
 
-- A failed scheduled run surfaces through GitHub Actions' own default behavior (a red run in the Actions tab, standard notification to whoever has Actions failure notifications enabled) — no custom Slack/email/webhook integration is added. Consistent with Phase 7's "no observability feature creep" precedent applied here to CI tooling rather than telemetry.
+- A failed manual run surfaces through GitHub Actions' own default behavior (a red run in the Actions tab, standard notification to whoever has Actions failure notifications enabled) — no custom Slack/email/webhook integration is added. Consistent with Phase 7's "no observability feature creep" precedent applied here to CI tooling rather than telemetry.
 
 ### Test / Validation
 
 - [ ] The existing Phase 0–7 CI job's trigger conditions (push/PR) and content are unchanged by this task — confirmed by diffing the workflow file.
-- [ ] A new workflow (or job within the existing workflow file) runs the golden-scenario suite on a cron schedule and accepts `workflow_dispatch`, with no `push`/`pull_request` trigger.
+- [ ] A new workflow (or job within the existing workflow file) runs the golden-scenario suite via `workflow_dispatch`, with no `schedule`, `push`, or `pull_request` trigger.
 - [ ] The golden-suite job's `ANTHROPIC_API_KEY` secret is scoped only to that job/workflow, not exposed to the per-push job.
 - [ ] A forced single-scenario failure (mocked at the assertion level for this test only) results in exactly one job run with no automatic re-invocation of that scenario — confirmed by checking the job only calls the API the expected number of times.
-- [ ] `manual_review_report.md` appears as a downloadable artifact on every golden-suite workflow run, scheduled or dispatched.
-- [ ] The docker-compose-backed suite variant has no schedule trigger — `workflow_dispatch` only, confirmed by workflow file inspection.
+- [ ] `manual_review_report.md` appears as a downloadable artifact on every golden-suite workflow run.
+- [ ] The docker-compose-backed suite variant is opt-in through `workflow_dispatch` only, confirmed by workflow file inspection.
 
 ### Status
 
@@ -356,7 +356,7 @@ Tasks 1–6 are locked.
 - [ ] The four behavioral-assertion categories from dataset spec §11.3 are each handled by the most deterministic mechanism that's actually safe to apply — negative `confidence` checks, exact template-answer checks, or (only where genuinely necessary) a captured, non-blocking manual-review report — with no LLM-as-judge and no keyword/content backstop anywhere (Task 3).
 - [ ] The golden suite runs through the actual FastAPI routes (ASGI in-process, real Compose Postgres) by default, and identically against a live `docker compose up` stack for pre-release verification, satisfying "through the public API, not only internal graph calls" without requiring container-level testing on every run (Task 4).
 - [ ] A five-bucket triage policy governs every fix made during Phase 8 implementation, keeping prompt iteration in scope while keeping the dataset, tool contract, and 8-scenario suite frozen exactly as designed (Task 5).
-- [ ] CI gains a nightly-plus-manual real-LLM regression job (no retry-on-failure, no schedule for the container variant) alongside the unchanged per-push mocked suite — genuine regression coverage without multiplying cost or noise (Task 6).
+- [ ] CI gains a manual real-LLM regression job (no retry-on-failure, no push/PR trigger) alongside the unchanged per-push mocked suite — genuine regression coverage without multiplying cost or noise (Task 6).
 - [ ] Two Phase 7 findings remain tracked independently of Phase 8 and don't block it either way, per Task 5's bucket-4 reasoning; the current repo state confirms both are implemented and documented.
 
 ## Status

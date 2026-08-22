@@ -1,8 +1,6 @@
 name: Golden Scenarios
 
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       run_container_variant:
