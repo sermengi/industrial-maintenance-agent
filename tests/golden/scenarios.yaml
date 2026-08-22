@@ -11,7 +11,12 @@ scenarios:
       - get_maintenance_history
     optional_tools: []
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - FE-001
+      - TS-002
+      - OL-001
+      - DOC-03
+      - ME-003
     hitl: false
     approval_step: null
 
@@ -27,7 +32,11 @@ scenarios:
     optional_tools:
       - get_maintenance_history
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - OBS-002
+      - TS-002
+      - DOC-03
+      - ME-003
     hitl: false
     approval_step: null
 
@@ -43,7 +52,8 @@ scenarios:
       - get_maintenance_history
       - search_maintenance_docs
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - TS-001
     hitl: false
     approval_step: null
 
@@ -60,7 +70,16 @@ scenarios:
       - get_plant_policy
     optional_tools: []
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - TS-003
+      - OL-002
+      - FE-004
+      - F102
+      - ME-006
+      - ME-007
+      - ME-008
+      - DOC-04
+      - PP-001
     hitl: false
     approval_step: null
 
@@ -76,7 +95,15 @@ scenarios:
       - search_maintenance_docs
     optional_tools: []
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - TS-004
+      - FE-005
+      - OBS-001
+      - ME-009
+      - ME-010
+      - DOC-01
+      - DOC-02
+      - DOC-05
     hitl: false
     approval_step: null
 
@@ -90,7 +117,8 @@ scenarios:
       - search_maintenance_docs
     optional_tools: []
     expected_status: ok
-    required_evidence_ids: []
+    required_evidence_ids:
+      - DOC-01
     hitl: false
     approval_step: null
 
@@ -121,10 +149,18 @@ scenarios:
       - create_work_order_draft
     optional_tools: []
     expected_status: needs_approval
-    required_evidence_ids: []
+    required_evidence_ids:
+      - TS-003
+      - FE-004
+      - F102
+      - ME-006
+      - ME-007
+      - PP-002
     hitl: true
     approval_step:
       decision: approve
       expected_status: ok
       required_tools_after_resume:
         - submit_work_order
+      required_evidence_source_types_after_resume:
+        - work_order

@@ -16,7 +16,7 @@ RECURRENCE_THRESHOLD = 3
 class FaultRecurrence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    source_type: Literal["fault_event"] = "fault_event"
+    source_type: Literal["fault_recurrence"] = "fault_recurrence"
     source_id: str
     fault_code: str
     total_occurrences: int
@@ -44,7 +44,7 @@ async def compute_fault_recurrence(
         )
         recurrence.append(
             FaultRecurrence(
-                source_id=max(events_for_code, key=lambda event: event.timestamp).event_id,
+                source_id=fault_code,
                 fault_code=fault_code,
                 total_occurrences=len(events_for_code),
                 occurrences_within_window=occurrences_within_window,

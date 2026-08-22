@@ -6,6 +6,9 @@ from pydantic import BaseModel
 
 from maintenance_agent.db.repositories.records import (
     FaultEventRecord,
+    MaintenanceEventRecord,
+    ObservationRecord,
+    OperatingLimitRecord,
     PlantPolicyRecord,
     WorkOrderRecord,
 )
@@ -73,6 +76,9 @@ def test_structured_evidence_item_covers_synthesis_facing_sources() -> None:
         ClassifiedReading,
         FaultEventRecord,
         FaultRecurrence,
+        MaintenanceEventRecord,
+        ObservationRecord,
+        OperatingLimitRecord,
         PlantPolicyRecord,
         WorkOrderRecord,
     }

@@ -599,8 +599,11 @@ async def evidence_gathering_node(
         if isinstance(result, GetAssetStatusResult):
             structured_evidence.extend(result.classified_readings)
             structured_evidence.extend(result.active_faults)
+            structured_evidence.extend(result.observations)
+            structured_evidence.extend(result.operating_limits)
         elif isinstance(result, GetMaintenanceHistoryResult):
             structured_evidence.extend(result.fault_events)
+            structured_evidence.extend(result.maintenance_events)
             structured_evidence.extend(result.recurrence)
         elif isinstance(result, GetPlantPolicyResult):
             structured_evidence.extend(result.policies)

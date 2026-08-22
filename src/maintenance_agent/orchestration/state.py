@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from maintenance_agent.db.repositories.records import (
     AssetRecord,
     FaultEventRecord,
+    MaintenanceEventRecord,
+    ObservationRecord,
+    OperatingLimitRecord,
     PlantPolicyRecord,
     WorkOrderRecord,
 )
@@ -38,7 +41,14 @@ AssetResolutionStatus = Literal["resolved", "not_found"]
 ApprovalStatus = Literal["none", "pending_approval", "approved", "rejected", "submitted"]
 
 StructuredEvidenceItem = (
-    ClassifiedReading | FaultEventRecord | FaultRecurrence | PlantPolicyRecord | WorkOrderRecord
+    ClassifiedReading
+    | FaultEventRecord
+    | FaultRecurrence
+    | MaintenanceEventRecord
+    | ObservationRecord
+    | OperatingLimitRecord
+    | PlantPolicyRecord
+    | WorkOrderRecord
 )
 
 

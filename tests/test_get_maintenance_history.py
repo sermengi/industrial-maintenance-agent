@@ -254,7 +254,7 @@ async def test_get_maintenance_history_returns_single_fault_nonrecurring_context
     assert result.work_orders == []
     assert result.recurrence == [
         FaultRecurrence(
-            source_id="FE-001",
+            source_id="F101",
             fault_code="F101",
             total_occurrences=1,
             occurrences_within_window=1,
@@ -282,13 +282,14 @@ async def test_get_maintenance_history_counts_pump_103_recurring_fault(
     assert [order.work_order_id for order in result.work_orders] == ["WO-002"]
     assert result.recurrence == [
         FaultRecurrence(
-            source_id="FE-004",
+            source_id="F102",
             fault_code="F102",
             total_occurrences=3,
             occurrences_within_window=3,
             meets_recurrence_threshold=True,
         )
     ]
+    assert result.recurrence[0].source_type == "fault_recurrence"
     assert ("faults_by_code", "PUMP-103", "F102") in repository_calls
 
 
@@ -306,7 +307,7 @@ async def test_get_maintenance_history_returns_pump_104_history_without_fabricat
     assert result.work_orders == []
     assert result.recurrence == [
         FaultRecurrence(
-            source_id="FE-005",
+            source_id="F103",
             fault_code="F103",
             total_occurrences=1,
             occurrences_within_window=1,
@@ -326,7 +327,7 @@ async def test_recurrence_window_is_anchored_to_asset_latest_fault_not_wall_cloc
 
     assert result.recurrence == [
         FaultRecurrence(
-            source_id="FE-T03",
+            source_id="F900",
             fault_code="F900",
             total_occurrences=3,
             occurrences_within_window=3,
