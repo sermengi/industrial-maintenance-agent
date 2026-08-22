@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Generator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, cast
+from uuid import UUID
 
 import httpx
 import pytest
@@ -49,6 +50,9 @@ from maintenance_agent.tools.search_maintenance_docs import (
 )
 
 SCENARIOS_PATH = Path(__file__).with_name("scenarios.yaml")
+MANUAL_REVIEW_REPORT_PATH = Path(__file__).with_name("manual_review_report.md")
+TROUBLESHOOTING_SCENARIO_IDS = {"GS-01", "GS-02", "GS-03", "GS-04", "GS-05"}
+_manual_review_rows: list[dict[str, str]] = []
 
 
 class ApprovalStep(BaseModel):
@@ -92,11 +96,20 @@ def emitted_events() -> list[RunEvent]:
     return []
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _manual_review_report() -> Generator[None]:
+    _manual_review_rows.clear()
+    MANUAL_REVIEW_REPORT_PATH.write_text("", encoding="utf-8")
+    yield
+    _write_manual_review_report(_manual_review_rows)
+
+
 @pytest.fixture(autouse=True)
 def _stub_graph_boundaries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+    monkeypatch.setattr(agent_api, "uuid4", _deterministic_uuid4())
     monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
     monkeypatch.setattr(graph_module, "submit_work_order", _fake_submit_work_order)
 
@@ -139,6 +152,7 @@ async def test_task_1_golden_scenario_contracts(
         first_payload = AgentQueryResponse.model_validate(first_response.json())
         assert len(emitted_events) == 1
         _assert_turn_1_contract(scenario, first_payload, emitted_events[0])
+        _capture_manual_review_row(scenario.id, "turn-1", first_payload)
 
         if scenario.approval_step is None:
             return
@@ -159,6 +173,42 @@ async def test_task_1_golden_scenario_contracts(
         emitted_events[0],
         emitted_events[1],
     )
+    _capture_manual_review_row(scenario.id, "approve", approval_payload)
+
+
+@pytest.mark.asyncio
+async def test_gs_08_reject_path_keeps_draft_unsubmitted(
+    emitted_events: list[RunEvent],
+) -> None:
+    scenario = next(scenario for scenario in load_golden_scenarios() if scenario.id == "GS-08")
+    app = _app_for_scenario(scenario, emitted_events)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        pause_response = await client.post("/agent/query", json={"query": scenario.query})
+        assert pause_response.status_code == 200
+        pause_payload = AgentQueryResponse.model_validate(pause_response.json())
+        assert pause_payload.pending_action is not None
+
+        reject_response = await client.post(
+            f"/agent/approvals/{pause_payload.pending_action.draft_id}",
+            json={"decision": "reject"},
+        )
+
+    assert reject_response.status_code == 200
+    reject_payload = AgentQueryResponse.model_validate(reject_response.json())
+    assert reject_payload.status == "ok"
+    assert reject_payload.pending_action is None
+    assert reject_payload.answer is not None
+    assert "No work order was created" in reject_payload.answer
+    assert "WO-" not in reject_payload.answer
+    assert "work_order" not in {
+        evidence.source_type for evidence in reject_payload.structured_evidence
+    }
+    assert len(emitted_events) == 2
+    assert "submit_work_order" not in [tool.tool_name for tool in emitted_events[1].tool_calls]
 
 
 def _assert_turn_1_contract(
@@ -173,6 +223,7 @@ def _assert_turn_1_contract(
     assert event.final_output == response
     assert event.status == response.status
     _assert_evidence_contract(scenario, response)
+    _assert_behavior_contract(scenario, response)
 
     tool_names = [tool_call.tool_name for tool_call in event.tool_calls]
     assert tool_names[0] == "resolve_asset"
@@ -198,6 +249,43 @@ def _assert_approval_contract(
     for required_tool in approval_step.required_tools_after_resume:
         assert required_tool in resume_tool_names
     _assert_resume_evidence_contract(approval_step, pause_event.final_output, response)
+    _assert_approval_behavior_contract(response)
+
+
+def _assert_behavior_contract(
+    scenario: GoldenScenario,
+    response: AgentQueryResponse,
+) -> None:
+    if scenario.id in TROUBLESHOOTING_SCENARIO_IDS:
+        assert response.confidence != "confirmed"
+    if scenario.id == "GS-03":
+        assert response.confidence == "hypothesis"
+    if scenario.id == "GS-07":
+        assert response.confidence is None
+        assert response.answer is not None
+        assert "PUMP-999" in response.answer
+        assert "couldn't find an asset matching" in response.answer
+    if scenario.id == "GS-08":
+        assert response.confidence is None
+        assert response.answer is not None
+        draft_fields = _draft_input(scenario)
+        assert str(draft_fields["issue"]) in response.answer
+        assert f"Priority: {draft_fields['priority']}" in response.answer
+        assert str(draft_fields["recommended_action"]) in response.answer
+
+
+def _assert_approval_behavior_contract(response: AgentQueryResponse) -> None:
+    work_order_items = [
+        evidence
+        for evidence in response.structured_evidence
+        if evidence.source_type == "work_order"
+    ]
+    assert len(work_order_items) == 1
+    work_order = work_order_items[0]
+    assert work_order.source_id is not None
+    assert response.answer is not None
+    assert work_order.source_id in response.answer
+    assert "priority: high" in response.answer
 
 
 def _assert_evidence_contract(
@@ -301,6 +389,65 @@ def _collecting_emitter(events: list[RunEvent]):
         events.append(event)
 
     return emit
+
+
+def _capture_manual_review_row(
+    scenario_id: str,
+    turn: str,
+    response: AgentQueryResponse,
+) -> None:
+    _manual_review_rows.append(
+        {
+            "scenario": scenario_id,
+            "turn": turn,
+            "status": response.status,
+            "confidence": response.confidence or "",
+            "evidence_ids": ", ".join(sorted(_response_evidence_ids(response))),
+            "answer": response.answer or "",
+        }
+    )
+
+
+def _response_evidence_ids(response: AgentQueryResponse) -> set[str]:
+    return {
+        item.source_id for item in response.structured_evidence if item.source_id is not None
+    } | {item.document_id for item in response.document_evidence}
+
+
+def _write_manual_review_report(rows: Sequence[dict[str, str]]) -> None:
+    lines = [
+        "# Golden Scenario Manual Review Report",
+        "",
+        "| Scenario | Turn | Status | Confidence | Evidence IDs | Answer |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    lines.extend(
+        "| {scenario} | {turn} | {status} | {confidence} | {evidence_ids} | {answer} |".format(
+            scenario=_markdown_cell(row["scenario"]),
+            turn=_markdown_cell(row["turn"]),
+            status=_markdown_cell(row["status"]),
+            confidence=_markdown_cell(row["confidence"]),
+            evidence_ids=_markdown_cell(row["evidence_ids"]),
+            answer=_markdown_cell(row["answer"]),
+        )
+        for row in rows
+    )
+    MANUAL_REVIEW_REPORT_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _deterministic_uuid4():
+    counter = 0
+
+    def uuid4() -> UUID:
+        nonlocal counter
+        counter += 1
+        return UUID(int=counter)
+
+    return uuid4
 
 
 class _RecordingLLMClient:
@@ -431,11 +578,7 @@ def _tool_input(tool_name: str, scenario: GoldenScenario) -> dict[str, object]:
             else "recurring_fault"
         }
     if tool_name == "create_work_order_draft":
-        return {
-            "issue": "Recurring bearing overheating",
-            "recommended_action": "Investigate recurring overheating before replacement.",
-            "priority": "high",
-        }
+        return _draft_input(scenario)
     return {}
 
 
@@ -453,6 +596,15 @@ def _synthesis_response(evidence_id: str) -> LLMResponse:
             )
         ]
     )
+
+
+def _draft_input(scenario: GoldenScenario) -> dict[str, object]:
+    del scenario
+    return {
+        "issue": "Recurring bearing overheating",
+        "recommended_action": "Investigate recurring overheating before replacement.",
+        "priority": "high",
+    }
 
 
 def _asset(asset_id: str) -> AssetRecord:
