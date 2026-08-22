@@ -1,0 +1,130 @@
+scenarios:
+  - id: GS-01
+    query: PUMP-102 has an active high-vibration fault. What should I inspect first?
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: PUMP-102
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+      - search_maintenance_docs
+      - get_maintenance_history
+    optional_tools: []
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-02
+    query: PUMP-102 is vibrating much more than usual. What could be wrong?
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: PUMP-102
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+      - search_maintenance_docs
+    optional_tools:
+      - get_maintenance_history
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-03
+    query: PUMP-101 seems to be overheating. What maintenance should we perform?
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: PUMP-101
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+    optional_tools:
+      - get_maintenance_history
+      - search_maintenance_docs
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-04
+    query: PUMP-103 is overheating again. What should we do?
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: PUMP-103
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+      - get_maintenance_history
+      - search_maintenance_docs
+      - get_plant_policy
+    optional_tools: []
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-05
+    query: Why is PUMP-104 producing low discharge pressure?
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: PUMP-104
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+      - get_maintenance_history
+      - search_maintenance_docs
+    optional_tools: []
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-06
+    query: How should I inspect the mechanical seal on PUMP-104?
+    asset_id_hint: null
+    expected_intent: procedure_lookup
+    expected_asset_id: PUMP-104
+    required_tools:
+      - resolve_asset
+      - search_maintenance_docs
+    optional_tools: []
+    expected_status: ok
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-07
+    query: PUMP-999 has high vibration. Diagnose it.
+    asset_id_hint: null
+    expected_intent: troubleshooting
+    expected_asset_id: null
+    required_tools:
+      - resolve_asset
+    optional_tools: []
+    expected_status: unknown_asset
+    required_evidence_ids: []
+    hitl: false
+    approval_step: null
+
+  - id: GS-08
+    query: Create a high-priority maintenance work order for PUMP-103.
+    asset_id_hint: null
+    expected_intent: work_order_request
+    expected_asset_id: PUMP-103
+    required_tools:
+      - resolve_asset
+      - get_asset_status
+      - get_maintenance_history
+      - search_maintenance_docs
+      - get_plant_policy
+      - create_work_order_draft
+    optional_tools: []
+    expected_status: needs_approval
+    required_evidence_ids: []
+    hitl: true
+    approval_step:
+      decision: approve
+      expected_status: ok
+      required_tools_after_resume:
+        - submit_work_order
