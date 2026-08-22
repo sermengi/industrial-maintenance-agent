@@ -308,6 +308,74 @@ async def test_unhandled_internal_error_still_emits_one_error_run_event(
     assert events[0].error.code == "unhandled_exception"
 
 
+@pytest.mark.asyncio
+async def test_all_eight_golden_scenarios_write_nine_events_to_real_jsonl_sink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    monkeypatch.setattr(agent_api, "_request_session", _fake_session_context)
+    monkeypatch.setattr(graph_module, "invoke_tool_binding", _fake_invoke_tool_binding)
+    monkeypatch.setattr(graph_module, "submit_work_order", _fake_submit_work_order)
+
+    for scenario in _phase_7_golden_event_scenarios():
+        graph = build_agent_graph(
+            AgentGraphDependencies(
+                llm_client=_RecordingLLMClient(scenario["llm_responses"]),
+            )
+        )
+        app = _app_with_graph_and_jsonl_sink(graph, path)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.post("/agent/query", json={"query": scenario["query"]})
+            assert response.status_code == 200
+            if scenario["id"] == "GS-08":
+                draft_id = response.json()["pending_action"]["draft_id"]
+                approval = await client.post(
+                    f"/agent/approvals/{draft_id}",
+                    json={"decision": "approve"},
+                )
+                assert approval.status_code == 200
+
+    events = read_run_events(path)
+    events_by_request = {event.request: event for event in events}
+
+    assert len(events) == 9
+    assert [event.status for event in events] == [
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "ok",
+        "unknown_asset",
+        "needs_approval",
+        "ok",
+    ]
+    assert [
+        tool.tool_name for tool in events_by_request["PUMP-102 GS-01"].tool_calls
+    ] == [
+        "resolve_asset",
+        "get_asset_status",
+        "search_maintenance_docs",
+        "get_maintenance_history",
+    ]
+    assert [
+        tool.tool_name for tool in events_by_request["PUMP-103 GS-04"].tool_calls
+    ] == [
+        "resolve_asset",
+        "get_asset_status",
+        "get_maintenance_history",
+        "search_maintenance_docs",
+        "get_plant_policy",
+    ]
+    assert events[-2].run_id == events[-1].run_id
+    assert events[-2].event_id != events[-1].event_id
+
+
 def _run_event(run_id: str) -> RunEvent:
     return RunEvent(
         event_id=UUID("11111111-1111-4111-8111-111111111111"),
@@ -320,6 +388,96 @@ def _run_event(run_id: str) -> RunEvent:
         final_output=AgentQueryResponse(request_id=run_id, status="ok"),
         error=None,
     )
+
+
+def _phase_7_golden_event_scenarios() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "GS-01",
+            "query": "PUMP-102 GS-01",
+            "llm_responses": [
+                _interpret_response("troubleshooting", "PUMP-102"),
+                _evidence_response("get_asset_status"),
+                _evidence_response("search_maintenance_docs"),
+                _evidence_response("get_maintenance_history"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response(),
+            ],
+        },
+        {
+            "id": "GS-02",
+            "query": "PUMP-102 GS-02",
+            "llm_responses": [
+                _interpret_response("troubleshooting", "PUMP-102"),
+                _evidence_response("get_asset_status"),
+                _evidence_response("search_maintenance_docs"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response(),
+            ],
+        },
+        {
+            "id": "GS-03",
+            "query": "PUMP-101 GS-03",
+            "llm_responses": [
+                _interpret_response("troubleshooting", "PUMP-101"),
+                _evidence_response("get_asset_status"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response("TS-001"),
+            ],
+        },
+        {
+            "id": "GS-04",
+            "query": "PUMP-103 GS-04",
+            "llm_responses": [
+                _interpret_response("troubleshooting", "PUMP-103"),
+                _evidence_response("get_asset_status"),
+                _evidence_response("get_maintenance_history"),
+                _evidence_response("search_maintenance_docs"),
+                _evidence_response("get_plant_policy"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response(),
+            ],
+        },
+        {
+            "id": "GS-05",
+            "query": "PUMP-104 GS-05",
+            "llm_responses": [
+                _interpret_response("troubleshooting", "PUMP-104"),
+                _evidence_response("get_asset_status"),
+                _evidence_response("get_maintenance_history"),
+                _evidence_response("search_maintenance_docs"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response(),
+            ],
+        },
+        {
+            "id": "GS-06",
+            "query": "PUMP-104 GS-06",
+            "llm_responses": [
+                _interpret_response("procedure_lookup", "PUMP-104"),
+                _evidence_response("search_maintenance_docs"),
+                LLMResponse(tool_calls=[]),
+                _synthesis_response(),
+            ],
+        },
+        {
+            "id": "GS-07",
+            "query": "PUMP-999 GS-07",
+            "llm_responses": [_interpret_response("troubleshooting", "PUMP-999")],
+        },
+        {
+            "id": "GS-08",
+            "query": "PUMP-103 GS-08",
+            "llm_responses": [
+                _interpret_response("work_order_request", "PUMP-103"),
+                _evidence_response("get_asset_status"),
+                _evidence_response("get_maintenance_history"),
+                _evidence_response("search_maintenance_docs"),
+                _evidence_response("get_plant_policy", policy_type="consequential_action"),
+                _draft_response(),
+            ],
+        },
+    ]
 
 
 class _FakeGraph:
