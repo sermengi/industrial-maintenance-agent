@@ -1,0 +1,125 @@
+name: Golden Scenarios
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      run_container_variant:
+        description: "Also rebuild the docker compose stack before the ASGI golden suite."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  golden-asgi:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: maintenance_agent_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d maintenance_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      APP_ENV: test
+      API_HOST: 127.0.0.1
+      API_PORT: 8000
+      LOG_LEVEL: INFO
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/maintenance_agent_test
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/maintenance_agent_test
+      RAG_EMBEDDING_BACKEND: mock
+      RUN_GOLDEN_SCENARIOS: "1"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Ingest RAG corpus into test database
+        run: uv run maintenance-agent-rag ingest --database test --force
+
+      - name: Run live golden public-API suite
+        run: uv run pytest tests/golden -q
+
+      - name: Upload manual review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-manual-review-report
+          path: tests/golden/manual_review_report.md
+          if-no-files-found: error
+
+  golden-container-variant:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_container_variant == 'true'
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+      API_HOST: 127.0.0.1
+      API_PORT: 8000
+      POSTGRES_DB: maintenance_agent_test
+      POSTGRES_TEST_DB: maintenance_agent_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/maintenance_agent_test
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/maintenance_agent_test
+      RAG_EMBEDDING_BACKEND: mock
+      RUN_GOLDEN_SCENARIOS: "1"
+      RUN_EVENTS_DIR: ./run-events
+      RUN_EVENTS_PATH: /app/run-events/golden-events.jsonl
+      GOLDEN_API_BASE_URL: http://127.0.0.1:8000
+      GOLDEN_RUN_EVENTS_PATH: run-events/golden-events.jsonl
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Rebuild docker compose stack from scratch
+        run: docker compose up --build --detach --wait
+
+      - name: Ingest RAG corpus into compose test database
+        run: uv run maintenance-agent-rag ingest --database test --force
+
+      - name: Run live golden public-API suite against compose HTTP API
+        run: uv run pytest tests/golden -q
+
+      - name: Upload manual review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-manual-review-report-container
+          path: tests/golden/manual_review_report.md
+          if-no-files-found: error

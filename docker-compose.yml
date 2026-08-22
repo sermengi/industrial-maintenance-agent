@@ -8,11 +8,14 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-maintenance_agent}
       TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_TEST_DB:-maintenance_agent_test}
+      RUN_EVENTS_PATH: ${RUN_EVENTS_PATH:-run-events/run-events.jsonl}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - ${RUN_EVENTS_DIR:-./run-events}:/app/run-events
 
   postgres:
     image: pgvector/pgvector:pg16

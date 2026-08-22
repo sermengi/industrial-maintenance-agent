@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Generator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -22,11 +23,14 @@ from maintenance_agent.main import create_app
 from maintenance_agent.orchestration.tool_bindings import CANONICAL_TOOL_NAMES, CanonicalToolName
 from maintenance_agent.schemas.agent import AgentQueryResponse, AgentStatus
 from maintenance_agent.schemas.run_event import RunEvent
+from maintenance_agent.telemetry.run_events import read_run_events
 
 SCENARIOS_PATH = Path(__file__).with_name("scenarios.yaml")
 MANUAL_REVIEW_REPORT_PATH = Path(__file__).with_name("manual_review_report.md")
 TROUBLESHOOTING_SCENARIO_IDS = {"GS-01", "GS-02", "GS-03", "GS-04", "GS-05"}
 GOLDEN_RUN_FLAG = "RUN_GOLDEN_SCENARIOS"
+GOLDEN_API_BASE_URL = "GOLDEN_API_BASE_URL"
+GOLDEN_RUN_EVENTS_PATH = "GOLDEN_RUN_EVENTS_PATH"
 _manual_review_rows: list[dict[str, str]] = []
 
 
@@ -55,11 +59,10 @@ class GoldenScenario(BaseModel):
     approval_step: ApprovalStep | None
 
 
-class GoldenApiHarness(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
+@dataclass(frozen=True)
+class GoldenApiHarness:
     client: httpx.AsyncClient
-    emitted_events: list[RunEvent]
+    events: Callable[[], list[RunEvent]]
 
 
 def load_golden_scenarios() -> list[GoldenScenario]:
@@ -102,6 +105,18 @@ async def golden_database_url() -> AsyncGenerator[str]:
 @pytest_asyncio.fixture
 async def golden_api(golden_database_url: str) -> AsyncGenerator[GoldenApiHarness]:
     del golden_database_url
+    live_base_url = os.getenv(GOLDEN_API_BASE_URL)
+    if live_base_url:
+        events_path = os.getenv(GOLDEN_RUN_EVENTS_PATH)
+        if not events_path:
+            pytest.skip(f"{GOLDEN_RUN_EVENTS_PATH} is required with {GOLDEN_API_BASE_URL}.")
+        event_file = Path(events_path)
+        event_file.parent.mkdir(parents=True, exist_ok=True)
+        event_file.write_text("", encoding="utf-8")
+        async with httpx.AsyncClient(base_url=live_base_url) as client:
+            yield GoldenApiHarness(client=client, events=lambda: _read_events(event_file))
+        return
+
     emitted_events: list[RunEvent] = []
     app = create_app()
 
@@ -111,7 +126,7 @@ async def golden_api(golden_database_url: str) -> AsyncGenerator[GoldenApiHarnes
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            yield GoldenApiHarness(client=client, emitted_events=emitted_events)
+            yield GoldenApiHarness(client=client, events=lambda: list(emitted_events))
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -146,8 +161,9 @@ async def test_task_4_golden_scenarios_run_through_public_api(
     first_response = await golden_api.client.post("/agent/query", json=_request_payload(scenario))
     assert first_response.status_code == 200
     first_payload = AgentQueryResponse.model_validate(first_response.json())
-    assert len(golden_api.emitted_events) == 1
-    _assert_turn_1_contract(scenario, first_payload, golden_api.emitted_events[0])
+    first_events = golden_api.events()
+    assert len(first_events) == 1
+    _assert_turn_1_contract(scenario, first_payload, first_events[0])
     _capture_manual_review_row(scenario.id, "turn-1", first_payload)
 
     if scenario.approval_step is None:
@@ -161,12 +177,13 @@ async def test_task_4_golden_scenarios_run_through_public_api(
     )
     assert approval_response.status_code == 200
     approval_payload = AgentQueryResponse.model_validate(approval_response.json())
-    assert len(golden_api.emitted_events) == 2
+    approval_events = golden_api.events()
+    assert len(approval_events) == 2
     _assert_approval_contract(
         scenario.approval_step,
         approval_payload,
-        golden_api.emitted_events[0],
-        golden_api.emitted_events[1],
+        approval_events[0],
+        approval_events[1],
     )
     _capture_manual_review_row(scenario.id, "approve", approval_payload)
 
@@ -196,9 +213,10 @@ async def test_task_4_gs_08_reject_path_runs_through_same_public_api_client(
     assert "work_order" not in {
         evidence.source_type for evidence in reject_payload.structured_evidence
     }
-    assert len(golden_api.emitted_events) == 2
+    reject_events = golden_api.events()
+    assert len(reject_events) == 2
     assert "submit_work_order" not in [
-        tool.tool_name for tool in golden_api.emitted_events[1].tool_calls
+        tool.tool_name for tool in reject_events[1].tool_calls
     ]
 
 
@@ -233,6 +251,12 @@ async def _work_order_ids(database_url: str) -> list[str]:
             return [row[0] for row in result]
     finally:
         await engine.dispose()
+
+
+def _read_events(path: Path) -> list[RunEvent]:
+    if not path.exists():
+        return []
+    return read_run_events(path)
 
 
 def _assert_turn_1_contract(
