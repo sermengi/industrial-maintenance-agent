@@ -286,9 +286,22 @@ Task 5 isn't itself a mechanism to build — it's a scope-control policy for wha
 - [ ] Any dataset-spec discrepancy found during implementation (beyond the two already resolved in Tasks 2–3) is recorded in this document with the same rationale/rejected-alternative structure used throughout, before being implemented — not fixed silently in code alone.
 - [ ] Neither open Phase 7 finding blocks Phase 8 completion regardless of fix status, confirmed by the golden suite passing its deterministic assertions with both findings either fixed or still open (i.e. Phase 8's own tests don't accidentally start depending on either fix).
 
-### Open item to confirm before implementation
+### Phase 7 finding status confirmed during implementation
 
-Both Phase 7 findings (`claude/phase7-finding-error-path-envelope-gaps.md`, `claude/phase7-finding-checkpoint-serializer-unregistered-types.md`) are marked "Confirmed, not yet implemented" in the project docs as last written. You mentioned you've already implemented Phase 7 and its required fixes — worth a quick confirmation of which of the two (if either) actually landed, purely so the two finding docs can be marked resolved and this task's bucket-4 reasoning above is checked against the real current state rather than the docs' last-written status. Neither answer changes anything else already locked in this task.
+The current repository state confirms both Phase 7 findings remain independently tracked
+and do not block Phase 8:
+
+- `docs/gaps/Phase7-finding-error-path-envelope-gaps.md` now records both route-level
+  error-envelope gaps as implemented, pointing to
+  `docs/fixes/phase-4-implementation-fix.md` and
+  `docs/fixes/phase-4-asset-id-error-path-fix.md` for the concrete route changes.
+- `docs/fixes/phase-7-implementation-fix.md` records the checkpoint serializer finding
+  as implemented, with regression coverage around the explicit
+  `JsonPlusSerializer` allow-list and warning-free checkpoint round trip.
+
+This confirmation does not change Task 5's bucket-4 rule: either finding's fixed or
+unfixed status is still outside Phase 8's golden-scenario scope unless a deterministic
+GS-01–GS-08 assertion depends on it.
 
 ### Status
 
@@ -344,7 +357,7 @@ Tasks 1–6 are locked.
 - [ ] The golden suite runs through the actual FastAPI routes (ASGI in-process, real Compose Postgres) by default, and identically against a live `docker compose up` stack for pre-release verification, satisfying "through the public API, not only internal graph calls" without requiring container-level testing on every run (Task 4).
 - [ ] A five-bucket triage policy governs every fix made during Phase 8 implementation, keeping prompt iteration in scope while keeping the dataset, tool contract, and 8-scenario suite frozen exactly as designed (Task 5).
 - [ ] CI gains a nightly-plus-manual real-LLM regression job (no retry-on-failure, no schedule for the container variant) alongside the unchanged per-push mocked suite — genuine regression coverage without multiplying cost or noise (Task 6).
-- [ ] Two Phase 7 findings remain tracked independently of Phase 8 and don't block it either way, per Task 5's bucket-4 reasoning, pending your confirmation of their actual fix status.
+- [ ] Two Phase 7 findings remain tracked independently of Phase 8 and don't block it either way, per Task 5's bucket-4 reasoning; the current repo state confirms both are implemented and documented.
 
 ## Status
 

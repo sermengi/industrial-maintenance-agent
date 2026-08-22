@@ -5,8 +5,7 @@ scenarios (`phase7structuredtelemetrywalkthrough.ipynb`), Scenario D (section 7,
 internal error via `FailingGraph`). Two distinct gaps in the same response, both on the
 Phase 4 Task 6 route-level try/except path — not a Phase 7 defect (the `RunEvent` itself is
 correct: `error` matches `final_output.error` exactly, as designed), but a pre-existing
-envelope-correctness gap this telemetry walkthrough happened to surface first. Not yet
-fixed.
+envelope-correctness gap this telemetry walkthrough happened to surface first. Implemented.
 
 ## What was observed
 
@@ -138,8 +137,16 @@ happened, which would be actively misleading for anyone debugging off the respon
 
 ## Status
 
-Confirmed, not yet implemented. Next step: decide the templated message text and the
-`asset_id`-on-error-path fix, implement both in the route-level except-handler, and re-run
-Scenario D (plus a hint-supplied variant, since the original test only exercises the hint
-being present) through the notebook to confirm both fields behave per the corrected
-contract.
+Implemented. Gap 1 is resolved by `docs/fixes/phase-4-implementation-fix.md`: the
+route-level catch-all now logs the real exception server-side and returns the fixed public
+message `"An unexpected error occurred. Please try again shortly."` with
+`error.code == "unhandled_exception"`.
+
+Gap 2 is resolved by `docs/fixes/phase-4-asset-id-error-path-fix.md`: the route-level
+catch-all now reads the graph checkpoint for the current run and reports the resolved
+asset ID only when `resolve_asset` had already succeeded, otherwise `None`.
+
+Regression coverage lives in `tests/test_health.py`:
+`test_agent_query_maps_unhandled_graph_exception_to_error_response`,
+`test_agent_query_never_leaks_raw_exception_text_but_logs_it`, and
+`test_agent_query_reports_resolved_asset_id_on_post_resolution_failure`.
